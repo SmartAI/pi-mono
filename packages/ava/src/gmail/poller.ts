@@ -1,5 +1,3 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import { log } from "../log.js";
 import type { Store } from "../store.js";
 import { decideAllowlist } from "./allowlist.js";
@@ -36,24 +34,17 @@ async function tick(opts: PollerOptions): Promise<void> {
 		const { raw, threadId } = await opts.client.getRaw(id);
 		if (!threadId) continue;
 
-		// Parse first so dedup is keyed on the RFC-822 Message-Id header,
-		// not the Gmail internal message id (a different hex string).
-		const parsed = await parseRaw(raw, { threadId });
-
-		if (await opts.store.hasMessageId(threadId, parsed.gmailMessageId)) {
+		// Parse with attachmentsDir so parseRaw writes REAL bytes to disk
+		// (mailparser already has them in .content — we just need a target).
+		// Dedup is keyed on the RFC-822 Message-Id header, not Gmail's
+		// internal message id.
+		const tmpParsed = await parseRaw(raw, { threadId });
+		if (await opts.store.hasMessageId(threadId, tmpParsed.gmailMessageId)) {
 			await opts.client.markRead(id);
 			continue;
 		}
-
-		const attDir = opts.store.threadPathAbs(threadId, `attachments/${parsed.gmailMessageId.replace(/[<>]/g, "")}`);
-		await mkdir(attDir, { recursive: true });
-		// Attachments: we write zero-byte placeholders matching filenames so downstream paths are
-		// stable. A follow-up task can fetch bytes via users.messages.attachments.get if needed.
-		for (const a of parsed.attachments) {
-			const abs = join(attDir, a.filename);
-			await writeFile(abs, Buffer.alloc(0));
-			a.path = abs;
-		}
+		const attDir = opts.store.threadPathAbs(threadId, `attachments/${tmpParsed.gmailMessageId.replace(/[<>]/g, "")}`);
+		const parsed = await parseRaw(raw, { threadId, attachmentsDir: attDir });
 
 		const decision = decideAllowlist(parsed, opts.allowlist);
 		if (!decision.allowed) {
@@ -73,6 +64,8 @@ async function tick(opts: PollerOptions): Promise<void> {
 			kind: "inbound",
 			gmailMessageId: parsed.gmailMessageId,
 			from: parsed.from,
+			to: parsed.to,
+			cc: parsed.cc,
 			at: parsed.receivedAt,
 			subject: parsed.subject,
 			bodyText: parsed.bodyText,

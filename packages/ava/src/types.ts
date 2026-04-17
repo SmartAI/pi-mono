@@ -2,7 +2,8 @@ export interface ParsedInboundMessage {
 	gmailMessageId: string; // Gmail's Message-Id header value
 	threadId: string; // Gmail threadId
 	from: string; // email address (normalised lowercase)
-	to: string[];
+	to: string[]; // all addresses from the To: header, lowercased
+	cc: string[]; // all addresses from the Cc: header, lowercased
 	subject: string;
 	bodyText: string; // quoted-history stripped
 	dkimResult: "pass" | "fail" | "none";
@@ -14,7 +15,8 @@ export interface ParsedInboundMessage {
 
 export interface OutboundReply {
 	threadId: string;
-	to: string;
+	to: string; // primary recipient (usually the original sender)
+	cc: string[]; // everyone else from the original To: + Cc: minus Ava's own address
 	inReplyToMessageId: string;
 	subject: string;
 	bodyText: string;

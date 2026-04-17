@@ -21,9 +21,17 @@ export interface AgentInvokerDeps {
 	sandboxExec: BackendRunOpts["sandboxExec"];
 	cwdInContainer: (tid: string) => string;
 	containerDataDir: string; // e.g. "/workspace" — container-side path that mirrors Store.dataDir
-	sendAck: (tid: string, originalMessageId: string, to: string, subject: string) => Promise<void>;
+	selfAddress: string; // Ava's own Gmail mailbox — excluded from reply-all CC list
+	sendAck: (tid: string, originalMessageId: string, to: string, cc: string[], subject: string) => Promise<void>;
 	sendReply: (reply: OutboundReply) => Promise<string>;
-	sendStatus: (tid: string, text: string, to: string, inReplyTo: string, subject: string) => Promise<void>;
+	sendStatus: (
+		tid: string,
+		text: string,
+		to: string,
+		cc: string[],
+		inReplyTo: string,
+		subject: string,
+	) => Promise<void>;
 }
 
 export function defaultBackends(): Record<BackendName, Backend> {
@@ -39,7 +47,15 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	const newestInbound = await readNewestInbound(store, tid);
 	if (!newestInbound) return;
 
-	await deps.sendAck(tid, newestInbound.gmailMessageId, newestInbound.from, reSubject(newestInbound.subject));
+	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress);
+
+	await deps.sendAck(
+		tid,
+		newestInbound.gmailMessageId,
+		recipients.to,
+		recipients.cc,
+		reSubject(newestInbound.subject),
+	);
 
 	await deps.ensureWorktree(tid);
 	await clearOutgoing(store.threadPathAbs(tid));
@@ -73,7 +89,8 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		await deps.sendStatus(
 			tid,
 			`${primary} is rate-limited. Trying ${fallback} as fallback; I'll continue this thread automatically.`,
-			newestInbound.from,
+			recipients.to,
+			recipients.cc,
 			newestInbound.gmailMessageId,
 			reSubject(newestInbound.subject),
 		);
@@ -95,7 +112,8 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 
 	const sentId = await deps.sendReply({
 		threadId: tid,
-		to: newestInbound.from,
+		to: recipients.to,
+		cc: recipients.cc,
 		inReplyToMessageId: newestInbound.gmailMessageId,
 		subject: reSubject(newestInbound.subject),
 		bodyText: finalBody,
@@ -143,11 +161,13 @@ async function handleFailure(
 ): Promise<void> {
 	const { deps, tid, newestInbound, primary, result } = ctx;
 	const subject = reSubject(newestInbound.subject);
+	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress);
 	if (kind === "auth") {
 		await deps.sendStatus(
 			tid,
 			`My ${primary} auth is broken. Please re-authenticate ${primary} on the host. I'll retry automatically once the credentials are refreshed.`,
-			newestInbound.from,
+			recipients.to,
+			recipients.cc,
 			newestInbound.gmailMessageId,
 			subject,
 		);
@@ -157,7 +177,8 @@ async function handleFailure(
 		await deps.sendStatus(
 			tid,
 			`Hit rate limits on all configured backends. I'll resume this thread when quotas reset. Reply again any time to bump the queue.`,
-			newestInbound.from,
+			recipients.to,
+			recipients.cc,
 			newestInbound.gmailMessageId,
 			subject,
 		);
@@ -167,7 +188,8 @@ async function handleFailure(
 	await deps.sendStatus(
 		tid,
 		`The agent subprocess exited with code ${result.exitCode}. Logs have been written to the thread directory. Reply to this email to retry.`,
-		newestInbound.from,
+		recipients.to,
+		recipients.cc,
 		newestInbound.gmailMessageId,
 		subject,
 	);
@@ -176,6 +198,8 @@ async function handleFailure(
 interface NewestInbound {
 	gmailMessageId: string;
 	from: string;
+	to: string[];
+	cc: string[];
 	subject: string;
 	bodyText: string;
 }
@@ -192,6 +216,8 @@ async function readNewestInbound(store: Store, tid: string): Promise<NewestInbou
 				return {
 					gmailMessageId: row.gmailMessageId,
 					from: row.from,
+					to: row.to ?? [],
+					cc: row.cc ?? [],
 					subject: row.subject,
 					bodyText: row.bodyText,
 				};
@@ -201,6 +227,31 @@ async function readNewestInbound(store: Store, tid: string): Promise<NewestInbou
 		}
 	}
 	return null;
+}
+
+/**
+ * Build reply-all recipient set per RFC 5322 conventions:
+ * - `to` = original sender
+ * - `cc` = everyone from the original To: + Cc: minus Ava's own address and minus the sender
+ *
+ * Ava's own address is detected from the outbound inbox identity (claude@actualvoice.ai
+ * in production). We pass it in as `selfAddress`.
+ */
+export function buildReplyRecipients(
+	inbound: { from: string; to: string[]; cc: string[] },
+	selfAddress: string,
+): { to: string; cc: string[] } {
+	const self = selfAddress.toLowerCase();
+	const sender = inbound.from.toLowerCase();
+	const seen = new Set<string>([sender, self]);
+	const cc: string[] = [];
+	for (const addr of [...inbound.to, ...inbound.cc]) {
+		const a = addr.toLowerCase();
+		if (seen.has(a)) continue;
+		seen.add(a);
+		cc.push(a);
+	}
+	return { to: sender, cc };
 }
 
 async function readIf(path: string): Promise<string> {

@@ -75,6 +75,9 @@ async function main(): Promise<void> {
 	const cwdInContainer = (tid: string) => `${containerDataDir}/threads/${tid}/worktree`;
 	const backends = defaultBackends();
 
+	const selfAddress = (await gmail.getProfileEmail()).toLowerCase();
+	log.info("authenticated as", { mailbox: selfAddress });
+
 	const dispatcher = new Dispatcher(
 		async (tid) => {
 			try {
@@ -86,10 +89,12 @@ async function main(): Promise<void> {
 					sandboxExec,
 					cwdInContainer,
 					containerDataDir,
-					sendAck: async (threadId, originalId, to, subject) => {
+					selfAddress,
+					sendAck: async (threadId, originalId, to, cc, subject) => {
 						await gmail.send({
 							threadId,
 							to,
+							cc,
 							subject,
 							bodyText: "On it. I'll reply when done.\n— Ava",
 							inReplyTo: originalId,
@@ -101,6 +106,7 @@ async function main(): Promise<void> {
 						return gmail.send({
 							threadId: reply.threadId,
 							to: reply.to,
+							cc: reply.cc,
 							subject: reply.subject,
 							bodyText: reply.bodyText,
 							inReplyTo: reply.inReplyToMessageId,
@@ -108,10 +114,11 @@ async function main(): Promise<void> {
 							attachments: reply.attachments.map((a) => ({ filename: a.filename, path: a.path })),
 						});
 					},
-					sendStatus: async (threadId, text, to, inReplyTo, subject) => {
+					sendStatus: async (threadId, text, to, cc, inReplyTo, subject) => {
 						await gmail.send({
 							threadId,
 							to,
+							cc,
 							subject,
 							bodyText: text,
 							inReplyTo,

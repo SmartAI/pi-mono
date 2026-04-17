@@ -8,6 +8,7 @@ function msg(over: Partial<ParsedInboundMessage>): ParsedInboundMessage {
 		threadId: "T",
 		from: "brian@actualvoice.ai",
 		to: ["claude@actualvoice.ai"],
+		cc: [],
 		subject: "hi",
 		bodyText: "",
 		dkimResult: "pass",

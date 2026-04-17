@@ -55,9 +55,15 @@ export class GmailClient {
 		});
 	}
 
+	async getProfileEmail(): Promise<string> {
+		const r = await this.gmail.users.getProfile({ userId: "me" });
+		return r.data.emailAddress ?? "";
+	}
+
 	async send(opts: {
 		threadId: string;
 		to: string;
+		cc?: string[];
 		subject: string;
 		bodyText: string;
 		inReplyTo: string;
@@ -78,6 +84,7 @@ export class GmailClient {
 
 async function buildMime(opts: {
 	to: string;
+	cc?: string[];
 	subject: string;
 	bodyText: string;
 	inReplyTo: string;
@@ -87,6 +94,7 @@ async function buildMime(opts: {
 	const boundary = `ava-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	const headers = [
 		`To: ${opts.to}`,
+		...(opts.cc && opts.cc.length > 0 ? [`Cc: ${opts.cc.join(", ")}`] : []),
 		`Subject: ${encodeHeader(opts.subject)}`,
 		`In-Reply-To: ${opts.inReplyTo}`,
 		`References: ${opts.references.join(" ")}`,

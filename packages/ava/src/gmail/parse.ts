@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { type AddressObject, type ParsedMail, simpleParser } from "mailparser";
 import type { ParsedInboundMessage } from "../types.js";
 
@@ -33,10 +35,37 @@ function addresses(a: AddressObject | AddressObject[] | undefined): string[] {
 	return arr.flatMap((o) => o.value.map((v) => (v.address ?? "").toLowerCase()).filter(Boolean));
 }
 
-export async function parseRaw(raw: Buffer, opts: { threadId: string }): Promise<ParsedInboundMessage> {
+export async function parseRaw(
+	raw: Buffer,
+	opts: { threadId: string; attachmentsDir?: string },
+): Promise<ParsedInboundMessage> {
 	const parsed: ParsedMail = await simpleParser(raw);
 	const authHeader = parsed.headers.get("authentication-results");
 	const authStr = typeof authHeader === "string" ? authHeader : undefined;
+
+	// If a target dir is supplied, write the real attachment bytes to disk and
+	// capture path + size. Without this, the caller only sees zero-byte
+	// placeholders (mailparser already parsed the bytes into .content but we'd
+	// be discarding them).
+	const attachmentMeta: Array<{ filename: string; path: string; bytes: number }> = [];
+	if (opts.attachmentsDir && (parsed.attachments ?? []).length > 0) {
+		await mkdir(opts.attachmentsDir, { recursive: true });
+		for (const a of parsed.attachments ?? []) {
+			const filename = a.filename ?? `unnamed-${a.contentId ?? attachmentMeta.length}`;
+			const abs = join(opts.attachmentsDir, filename);
+			const buf = Buffer.isBuffer(a.content) ? a.content : Buffer.from(a.content ?? "");
+			await writeFile(abs, buf);
+			attachmentMeta.push({ filename, path: abs, bytes: buf.length });
+		}
+	} else {
+		for (const a of parsed.attachments ?? []) {
+			attachmentMeta.push({
+				filename: a.filename ?? "unnamed",
+				path: "",
+				bytes: a.size ?? (Buffer.isBuffer(a.content) ? a.content.length : 0),
+			});
+		}
+	}
 
 	const lowerHeaders: Record<string, string> = {};
 	for (const [k, v] of parsed.headers.entries()) {
@@ -48,15 +77,12 @@ export async function parseRaw(raw: Buffer, opts: { threadId: string }): Promise
 		threadId: opts.threadId,
 		from: firstAddress(parsed.from),
 		to: addresses(parsed.to),
+		cc: addresses(parsed.cc),
 		subject: parsed.subject ?? "",
 		bodyText: stripQuoted(parsed.text ?? ""),
 		dkimResult: classifyAuth(authStr, "dkim"),
 		spfResult: classifyAuth(authStr, "spf"),
-		attachments: (parsed.attachments ?? []).map((a) => ({
-			filename: a.filename ?? "unnamed",
-			path: "",
-			bytes: a.size ?? 0,
-		})),
+		attachments: attachmentMeta,
 		receivedAt: (parsed.date ?? new Date()).toISOString(),
 		headers: lowerHeaders,
 	};

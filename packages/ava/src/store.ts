@@ -7,6 +7,8 @@ export type LogEntry =
 			kind: "inbound";
 			gmailMessageId: string;
 			from: string;
+			to?: string[];
+			cc?: string[];
 			at: string;
 			subject: string;
 			bodyText: string;
