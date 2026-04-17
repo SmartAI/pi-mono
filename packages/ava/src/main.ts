@@ -175,6 +175,7 @@ async function loadSettings(dataDir: string): Promise<AvaSettings> {
 		...raw,
 		backend: { ...DEFAULT_SETTINGS.backend, ...(raw.backend ?? {}) },
 		dispatcher: { ...DEFAULT_SETTINGS.dispatcher, ...(raw.dispatcher ?? {}) },
+		replyDefaults: { ...DEFAULT_SETTINGS.replyDefaults, ...(raw.replyDefaults ?? {}) },
 	};
 }
 

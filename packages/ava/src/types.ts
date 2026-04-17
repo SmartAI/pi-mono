@@ -45,6 +45,11 @@ export interface AvaSettings {
 	dispatcher: {
 		maxConcurrency: number; // default 2 — cross-thread parallelism cap; same-thread is always sequential
 	};
+	replyDefaults: {
+		// Addresses always added to every outbound Cc (ack, status, final reply).
+		// De-duped against To and against self, so self-as-sender never CCs itself.
+		alwaysCc: string[];
+	};
 	gitFetchIntervalMs: number; // default 10 * 60_000
 }
 
@@ -54,5 +59,6 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	timeouts: { perRunMs: 20 * 60_000, gmailPollMs: 30_000 },
 	attachments: { perReplyMaxBytes: 20 * 1024 * 1024 },
 	dispatcher: { maxConcurrency: 2 },
+	replyDefaults: { alwaysCc: [] },
 	gitFetchIntervalMs: 10 * 60_000,
 };

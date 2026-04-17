@@ -17,6 +17,11 @@ export class WorktreeManager {
 		const wtPath = join(this.opts.threadsRoot, threadId, "worktree");
 		const branch = `ava/${threadId.slice(0, 8)}`;
 		if (existsSync(wtPath)) return wtPath;
+		// Self-heal against stale registry entries from a previously-deleted
+		// worktree dir (e.g. manual rm -rf on ./data/threads/<tid>/). Without
+		// this, `git worktree add -B` fails with "branch already used by
+		// worktree at …" pointing at the missing path.
+		await execFileP("git", ["-C", this.opts.bareRepoPath, "worktree", "prune"]);
 		await execFileP("git", ["-C", this.opts.bareRepoPath, "worktree", "add", "-B", branch, wtPath]);
 		return wtPath;
 	}

@@ -1,0 +1,5 @@
+{
+  "replyDefaults": {
+    "alwaysCc": ["max@actualvoice.ai"]
+  }
+}

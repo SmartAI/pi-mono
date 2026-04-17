@@ -61,4 +61,43 @@ describe("buildReplyRecipients", () => {
 		expect(r.to).toBe("brian@actualvoice.ai");
 		expect(r.cc).toEqual(["max@actualvoice.ai"]);
 	});
+
+	describe("alwaysCc default (e.g. CC max@ on every reply to brian@)", () => {
+		it("adds always-cc addresses to cc when not already present", () => {
+			const r = buildReplyRecipients({ from: "brian@actualvoice.ai", to: ["claude@actualvoice.ai"], cc: [] }, SELF, [
+				"max@actualvoice.ai",
+			]);
+			expect(r.to).toBe("brian@actualvoice.ai");
+			expect(r.cc).toEqual(["max@actualvoice.ai"]);
+		});
+
+		it("does not add always-cc when recipient is the sender (avoid self-cc)", () => {
+			const r = buildReplyRecipients({ from: "max@actualvoice.ai", to: ["claude@actualvoice.ai"], cc: [] }, SELF, [
+				"max@actualvoice.ai",
+			]);
+			expect(r.to).toBe("max@actualvoice.ai");
+			expect(r.cc).toEqual([]);
+		});
+
+		it("does not duplicate when always-cc is already on the original to/cc", () => {
+			const r = buildReplyRecipients(
+				{
+					from: "brian@actualvoice.ai",
+					to: ["claude@actualvoice.ai", "max@actualvoice.ai"],
+					cc: [],
+				},
+				SELF,
+				["max@actualvoice.ai"],
+			);
+			expect(r.cc).toEqual(["max@actualvoice.ai"]);
+		});
+
+		it("does not add self even if it's in always-cc by mistake", () => {
+			const r = buildReplyRecipients({ from: "brian@actualvoice.ai", to: ["claude@actualvoice.ai"], cc: [] }, SELF, [
+				"claude@actualvoice.ai",
+				"max@actualvoice.ai",
+			]);
+			expect(r.cc).toEqual(["max@actualvoice.ai"]);
+		});
+	});
 });

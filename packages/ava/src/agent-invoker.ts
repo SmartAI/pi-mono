@@ -47,7 +47,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	const newestInbound = await readNewestInbound(store, tid);
 	if (!newestInbound) return;
 
-	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress);
+	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress, deps.settings.replyDefaults.alwaysCc);
 
 	await deps.sendAck(
 		tid,
@@ -161,7 +161,7 @@ async function handleFailure(
 ): Promise<void> {
 	const { deps, tid, newestInbound, primary, result } = ctx;
 	const subject = reSubject(newestInbound.subject);
-	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress);
+	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress, deps.settings.replyDefaults.alwaysCc);
 	if (kind === "auth") {
 		await deps.sendStatus(
 			tid,
@@ -240,12 +240,22 @@ async function readNewestInbound(store: Store, tid: string): Promise<NewestInbou
 export function buildReplyRecipients(
 	inbound: { from: string; to: string[]; cc: string[] },
 	selfAddress: string,
+	alwaysCc: string[] = [],
 ): { to: string; cc: string[] } {
 	const self = selfAddress.toLowerCase();
 	const sender = inbound.from.toLowerCase();
 	const seen = new Set<string>([sender, self]);
 	const cc: string[] = [];
+	// Reply-all: everyone else from the original To + Cc.
 	for (const addr of [...inbound.to, ...inbound.cc]) {
+		const a = addr.toLowerCase();
+		if (seen.has(a)) continue;
+		seen.add(a);
+		cc.push(a);
+	}
+	// Always-Cc defaults (e.g. "CC max@ on every reply to Brian"): merged in
+	// AFTER reply-all so they can't dup with sender or self.
+	for (const addr of alwaysCc) {
 		const a = addr.toLowerCase();
 		if (seen.has(a)) continue;
 		seen.add(a);
