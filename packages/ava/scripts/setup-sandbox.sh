@@ -59,7 +59,7 @@ else
 fi
 
 docker exec -u 0 "$CONTAINER" sh -euc '
-  apk add --no-cache git github-cli nodejs npm jq curl chromium bash shadow openssh-client
+  apk add --no-cache git github-cli nodejs npm jq curl chromium bash shadow openssh-client rclone
   adduser -D -h /home/ava -s /bin/bash ava || true
   # The podman --userns=keep-id option auto-injects the host user (UID 1000)
   # into /etc/passwd with home=/ and shell=/bin/sh. Repoint that home dir
@@ -69,30 +69,47 @@ docker exec -u 0 "$CONTAINER" sh -euc '
   npm install -g @anthropic-ai/claude-code @openai/codex @mariozechner/pi-coding-agent
 '
 
-# SSH keys: copy into the container (can't mount because of SELinux MCS
-# category mismatch between host ~/.ssh and this container's category).
-# Owned by UID 1000 (the exec user) with correct SSH perms.
-if [ -f "$HOME/.ssh/id_ed25519" ]; then
-  docker exec -u 0 "$CONTAINER" install -d -m 700 -o 1000 -g 1000 /home/ava/.ssh
-  docker cp "$HOME/.ssh/id_ed25519" "$CONTAINER":/home/ava/.ssh/id_ed25519
-  docker cp "$HOME/.ssh/id_ed25519.pub" "$CONTAINER":/home/ava/.ssh/id_ed25519.pub
-  [ -f "$HOME/.ssh/known_hosts" ] && docker cp "$HOME/.ssh/known_hosts" "$CONTAINER":/home/ava/.ssh/known_hosts
+# rclone: copy the host's rclone.conf into the sandbox so agents can read/write
+# Google Drive via the API (no FUSE needed, works under podman --userns=keep-id).
+# The config contains OAuth tokens for whatever remotes are defined — same
+# access level as running rclone on the host. If rclone.conf doesn'"'"'t exist
+# on the host, Drive commands inside the sandbox will fail but the sandbox
+# still comes up.
+if [ -f "$HOME/.config/rclone/rclone.conf" ]; then
+  docker exec -u 0 "$CONTAINER" install -d -m 700 -o 1000 -g 1000 /home/ava/.config/rclone
+  docker cp "$HOME/.config/rclone/rclone.conf" "$CONTAINER":/home/ava/.config/rclone/rclone.conf
   docker exec -u 0 "$CONTAINER" sh -euc '
-    chown -R 1000:1000 /home/ava/.ssh
-    chmod 600 /home/ava/.ssh/id_ed25519
-    chmod 644 /home/ava/.ssh/id_ed25519.pub
-    [ -f /home/ava/.ssh/known_hosts ] && chmod 644 /home/ava/.ssh/known_hosts
-    exit 0
+    chown 1000:1000 /home/ava/.config/rclone/rclone.conf
+    chmod 600 /home/ava/.config/rclone/rclone.conf
   '
 fi
 
-# gh auth: the host keeps its token in the system keyring (not hosts.yml).
-# Write an explicit hosts.yml inside the container so `gh` works without
-# needing the keyring. Runs best-effort; if `gh auth token` on the host
-# fails, the sandbox still comes up but `gh` commands will require manual
-# login. Owned by UID 1000 (our exec user) — NOT the ava user (UID 1001).
-GH_TOKEN="$(gh auth token 2>/dev/null || true)"
-if [ -n "$GH_TOKEN" ]; then
+# SSH key: Ava-dedicated ed25519 key (repo-scoped deploy key on voicepulse).
+# Defaults to ~/.config/ava/id_ed25519; override with AVA_DEPLOY_KEY. We do NOT
+# fall back to the user's personal ~/.ssh — that would give the sandbox
+# broader-than-needed access. If the Ava key doesn't exist, SSH auth in the
+# container just won't work and the agent will attach patches/bundles instead.
+AVA_DEPLOY_KEY="${AVA_DEPLOY_KEY:-$HOME/.config/ava/id_ed25519}"
+if [ -f "$AVA_DEPLOY_KEY" ]; then
+  docker exec -u 0 "$CONTAINER" install -d -m 700 -o 1000 -g 1000 /home/ava/.ssh
+  docker cp "$AVA_DEPLOY_KEY"     "$CONTAINER":/home/ava/.ssh/id_ed25519
+  docker cp "$AVA_DEPLOY_KEY.pub" "$CONTAINER":/home/ava/.ssh/id_ed25519.pub
+  # Seed known_hosts with github.com so BatchMode SSH doesn't prompt.
+  docker exec -u 0 "$CONTAINER" sh -euc '
+    ssh-keyscan -t ed25519,rsa github.com > /home/ava/.ssh/known_hosts 2>/dev/null
+    chown -R 1000:1000 /home/ava/.ssh
+    chmod 600 /home/ava/.ssh/id_ed25519
+    chmod 644 /home/ava/.ssh/id_ed25519.pub /home/ava/.ssh/known_hosts
+  '
+fi
+
+# gh auth: Ava-dedicated fine-grained PAT (scoped to voicepulse only).
+# Defaults to ~/.config/ava/gh-token; override with AVA_GH_TOKEN_FILE. We do
+# NOT fall back to the user's personal `gh auth token` — same reasoning as
+# the SSH key.
+AVA_GH_TOKEN_FILE="${AVA_GH_TOKEN_FILE:-$HOME/.config/ava/gh-token}"
+if [ -f "$AVA_GH_TOKEN_FILE" ]; then
+  GH_TOKEN="$(tr -d '[:space:]' < "$AVA_GH_TOKEN_FILE")"
   docker exec -u 0 "$CONTAINER" sh -euc "
     install -d -m 700 -o 1000 -g 1000 /home/ava/.config/gh
     cat > /home/ava/.config/gh/hosts.yml <<EOF
