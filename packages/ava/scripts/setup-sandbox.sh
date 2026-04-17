@@ -33,7 +33,7 @@ fi
 docker exec -u 0 "$CONTAINER" sh -euc '
   apk add --no-cache git github-cli nodejs npm jq curl chromium bash shadow
   adduser -D -h /home/ava -s /bin/bash ava || true
-  npm install -g @anthropic-ai/claude-code @openai/codex-cli @mariozechner/pi-coding-agent || true
+  npm install -g @anthropic-ai/claude-code @openai/codex @mariozechner/pi-coding-agent
 '
 
 # Host-side: create the bare repo if it does not exist yet
