@@ -1,0 +1,51 @@
+import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
+
+export interface WorktreeManagerOpts {
+	bareRepoPath: string;
+	threadsRoot: string;
+}
+
+export class WorktreeManager {
+	constructor(private opts: WorktreeManagerOpts) {}
+
+	async ensureWorktree(threadId: string): Promise<string> {
+		const wtPath = join(this.opts.threadsRoot, threadId, "worktree");
+		const branch = `ava/${threadId.slice(0, 8)}`;
+		if (existsSync(wtPath)) return wtPath;
+		await execFileP("git", ["-C", this.opts.bareRepoPath, "worktree", "add", "-B", branch, wtPath]);
+		return wtPath;
+	}
+
+	async cleanupThread(threadId: string): Promise<void> {
+		const wtPath = join(this.opts.threadsRoot, threadId, "worktree");
+		if (!existsSync(wtPath)) return;
+		await execFileP("git", ["-C", this.opts.bareRepoPath, "worktree", "remove", "--force", wtPath]);
+	}
+
+	async fetch(): Promise<void> {
+		await execFileP("git", ["-C", this.opts.bareRepoPath, "fetch", "--prune", "--all"]);
+	}
+
+	async prune(
+		maxInactiveMs: number,
+		store: { threadLastActivityMs: (id: string) => Promise<number>; listThreadIds: () => Promise<string[]> },
+	): Promise<number> {
+		const now = Date.now();
+		let removed = 0;
+		for (const tid of await store.listThreadIds()) {
+			const wtPath = join(this.opts.threadsRoot, tid, "worktree");
+			if (!existsSync(wtPath)) continue;
+			const last = await store.threadLastActivityMs(tid);
+			if (now - last > maxInactiveMs) {
+				await this.cleanupThread(tid);
+				removed++;
+			}
+		}
+		return removed;
+	}
+}
