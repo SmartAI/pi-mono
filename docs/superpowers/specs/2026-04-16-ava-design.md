@@ -8,7 +8,7 @@
 
 Ava is an LLM-powered teammate that Max and Brian can reach over email at `claude@actualvoice.ai`. She handles development, testing, bug fixes, frontend, and design work for the ActualVoice product. Every thread is a task; Ava replies with results, diffs, screenshots, and PR links.
 
-Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../packages/mom/README.md) — with two structural differences: the Slack transport is swapped for Gmail, and the agent loop itself is delegated to the `pi` CLI (pi-coding-agent) via subprocess invocation with per-thread session files. Ava's own code is deliberately small: Gmail transport, allowlist, dispatcher, sandbox glue, worktree management, and an attachment-collection convention.
+Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../packages/mom/README.md) — with two structural differences: the Slack transport is swapped for Gmail, and the agent loop itself is delegated to an official vendor CLI (either `claude` or `codex`) via subprocess invocation with per-thread session reuse. Ava's own code is deliberately small: Gmail transport, allowlist, dispatcher, sandbox glue, worktree management, backend selection, and an attachment-collection convention.
 
 ## 2. Scope
 
@@ -19,8 +19,13 @@ Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../pa
 - Sandboxed tool execution in a Docker container on Max's Fedora laptop. Bind-mounts use SELinux `:Z` relabel flag.
 - Two-email reply model per request: instant ack ("on it") + final reply with results.
 - Sequential execution per thread; cross-thread serialization is single-process sequential in v1.
-- LLM access via Claude Opus 4.7 over pi-coding-agent's OAuth `auth.json` (Max has no Anthropic API key, only subscription access).
-- Agent execution delegated to pi-coding-agent (`pi` CLI) as a subprocess, one process per email run, with per-thread session files (`threads/<tid>/session.jsonl`) passed via `--session`. Ava does NOT re-implement the agent loop.
+- LLM access via Max's **subscriptions** to Claude Code and Codex — no API keys. Agent execution delegated to subprocesses.
+- Three pluggable backends, configured in `settings.json`:
+  - `claude-code` — Anthropic's official `claude` CLI. TOS-safe (it's Anthropic's own app), uses Max's Claude Code subscription.
+  - `codex` — OpenAI's official `codex` CLI. TOS-safe, uses Max's Codex/ChatGPT subscription; defaults to GPT-5.4.
+  - `pi` — `@mariozechner/pi-coding-agent`. Max can opt in for extended features (skills tree, in-tree sessions, additional providers if an API key is ever added). **TOS caveat:** if pi is used with Anthropic OAuth, that path is less clearly sanctioned than calling `claude` directly — Max accepts the risk when he selects this backend on his own laptop.
+- Settings pick a default backend and a fallback backend (e.g. default `claude-code`, fallback `codex`). Any backend not listed is still callable via the `@ava:use=<backend>` directive in the message body. Automatic failover on rate-limit.
+- Per-thread session reuse handled by the backend itself (`claude --resume <id>`, Codex's equivalent). Ava persists only a session-id pointer file per thread per backend.
 - Auto-prune of inactive thread worktrees after 14 days; `log.jsonl` and memory retained indefinitely.
 
 ### Explicitly out of scope (v1)
@@ -28,7 +33,7 @@ Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../pa
 - Scheduled wake-ups / cron events (pi-mom has these; port later if needed).
 - Web dashboard, artifacts server, progress streaming beyond the two emails.
 - Multi-transport abstraction. If a second transport ever appears, we refactor then.
-- Cross-provider LLM fallback. Claude-only in v1.
+- Backends beyond Claude Code and Codex in v1 (Gemini CLI, Ollama, etc. are v2 candidates; the backend interface is designed to accept them).
 - Load testing, horizontal scaling. Two users on one laptop.
 
 ## 3. High-level architecture
@@ -44,23 +49,27 @@ Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../pa
 │  │  └──────┬───────┘    └─────────┬──────────┘   │      │
 │  │         │                      ▼              │      │
 │  │         │        ┌──────────────────────────┐ │      │
-│  │         │        │ pi-invoker               │ │      │
-│  │         │        │ spawns `pi` subprocess   │ │      │
-│  │         │        │ with --session <file>    │ │      │
+│  │         │        │ agent-invoker            │ │      │
+│  │         │        │ spawns `claude`, `codex`,│ │      │
+│  │         │        │ or `pi` (pluggable)      │ │      │
 │  │         │        └───────────┬──────────────┘ │      │
 │  │         ▼                    ▼                │      │
 │  │  ┌──────────────────────────────────────┐     │      │
 │  │  │ Gmail sender (API) — ack + replies   │     │      │
 │  │  └──────────────────────────────────────┘     │      │
 │  └──────────────────┬────────────────────────────┘      │
-│                     │ docker exec pi ...                │
+│                     │ docker exec (claude | codex | pi) │
 │  ┌──────────────────▼────────────────────────────┐      │
 │  │  ava-sandbox (Alpine container)               │      │
-│  │  + pi-coding-agent CLI (`pi`) preinstalled    │      │
+│  │  + `claude` (Claude Code) preinstalled        │      │
+│  │  + `codex`  (OpenAI Codex) preinstalled       │      │
+│  │  + `pi`     (pi-coding-agent) preinstalled    │      │
+│  │  /home/ava/.claude   (host ~/.claude   ro)    │      │
+│  │  /home/ava/.codex    (host ~/.codex    ro)    │      │
+│  │  /home/ava/.pi       (host ~/.pi       ro)    │      │
 │  │  /workspace/                                  │      │
 │  │    repo.git/                (shared bare)     │      │
 │  │    threads/<thread-id>/                       │      │
-│  │      session.jsonl         (pi session)       │      │
 │  │      worktree/             (git worktree)     │      │
 │  │      scratch/              (temp files)       │      │
 │  │      outgoing/             (email attachments)│      │
@@ -70,22 +79,23 @@ Ava is a fork of the architecture proven in [`@mariozechner/pi-mom`](../../../pa
 │  ./data/ (host-mounted into container with :Z)          │
 │    MEMORY.md                         (global)           │
 │    allowlist.json                    (Max + Brian)      │
-│    settings.json                     (prune days, etc.) │
-│    auth.json                         (pi OAuth)         │
-│    gmail-token.json                  (OAuth refresh)    │
+│    settings.json       (backend default+fallback, etc.) │
+│    gmail-token.json                  (Gmail OAuth)      │
 │    threads/<thread-id>/                                 │
-│      log.jsonl        (email transport log only)        │
-│      session.jsonl    (owned by pi-coding-agent)        │
+│      log.jsonl              (email transport log)       │
+│      claude-session-id      (pointer, if ever used)     │
+│      codex-session-id       (pointer, if ever used)     │
+│      pi-session.jsonl       (inline, if ever used)      │
 │      MEMORY.md, attachments/, outgoing/, .lock,         │
-│      last-seen-msg-id                                   │
+│      last-seen-msg-id, crash.log                        │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### Process boundaries
 
-- **Host process**: the Node app running `ava`. Owns Gmail API access, dispatcher queue, filesystem state under `./data/`, and spawning the `pi` subprocess via `docker exec`. Does not run the agent loop itself.
-- **Sandbox container**: Alpine Linux with `pi-coding-agent` preinstalled. Started and managed by the host process. Owns the bare repo, all worktrees, and anything pi installs while working. The container mount point `/workspace` is the same directory as the host's `./data/`, with SELinux relabeled via `:Z`.
-- **pi subprocess**: the actual agent, invoked once per run with `--session <thread-session-file>`. Handles tool calls, LLM conversation, 429 backoff, and context compaction.
+- **Host process**: the Node app running `ava`. Owns Gmail API access, dispatcher queue, filesystem state under `./data/`, backend selection, and spawning the chosen agent CLI via `docker exec`. Does not run the agent loop itself.
+- **Sandbox container**: Alpine Linux with both `claude` and `codex` preinstalled. Started and managed by the host process. Owns the bare repo, all worktrees, and anything the agent installs while working. `/workspace` mirrors host `./data/` with SELinux `:Z` relabeling; `~/.claude` and `~/.codex` from the host are mounted read-only so both CLIs find their OAuth credentials but can't write to them.
+- **Agent subprocess** (`claude` or `codex`): the actual agent, invoked per run with backend-specific session resume flags. Handles tool calls, LLM conversation, rate-limit backoff, and context compaction.
 - **Gmail API**: external. OAuth token refresh is automatic; refresh token lives in `./data/gmail-token.json`.
 - **GitHub**: external. `gh` CLI is installed inside the container and authenticated once on setup; token lives in the container filesystem, not on the host.
 
@@ -133,60 +143,100 @@ New.
 - Cross-thread execution is **sequential** in v1 (single worker). Rationale: predictable laptop resource usage while dogfooding. Easy to lift to a worker pool later.
 - Uses a filesystem lock (`threads/<tid>/.lock` via `flock`) as a crash-safety backstop in addition to the in-memory map. On restart, any stale lock whose owning PID no longer exists is reclaimed.
 
-### 4.4 `pi-invoker.ts` — agent runner (spawns `pi` with session reuse)
+### 4.4 `agent-invoker.ts` — pluggable backend runner
 
-**New approach — not a hand-rolled agent loop.** Ava does not re-implement the agent loop the way pi-mom does. Instead, she spawns the `pi` (pi-coding-agent) CLI as a subprocess per run, with `--session <path>` pointing at a per-thread session file. pi owns the agent loop, tool set, context compaction, retry/backoff, and session persistence. Ava owns the email transport, allowlist, dispatcher, sandbox, worktree, and outgoing-attachment collection.
+**Three pluggable backends, no hand-rolled agent loop.** Ava spawns an agent CLI as a subprocess per run. The backend is chosen per-run from:
+- `claude-code` — Anthropic's official `claude` CLI.
+- `codex` — OpenAI's official `codex` CLI.
+- `pi` — `@mariozechner/pi-coding-agent`, opt-in for extended features (skill system, tree-structured sessions, additional providers).
 
-**Why this works:**
-- pi-coding-agent already has first-class session reuse: `--session <path|uuid>` resumes exactly where the previous invocation left off, with tree-structured history, auto-compaction, and crash-safe JSONL persistence.
-- Session files live under `threads/<tid>/session.jsonl`, one per Gmail thread. A follow-up email in the same thread resumes that exact session — pi sees the full prior conversation without Ava rebuilding anything.
-- Max's Claude auth works transparently: `pi` inside the sandbox reads `/workspace/auth.json` (mounted from host `./data/auth.json`, itself a symlink to `~/.pi/agent/auth.json`).
-- Rate-limit handling, 429 backoff, and context compaction are all pi's responsibility — code Ava does not have to write or maintain.
+The two official CLIs are the **TOS-safe default pair**. `pi` is available as an explicit opt-in for Max's own experimentation and for scenarios where pi's features are worth the caveat (its Anthropic OAuth reuse is on thinner TOS ice than `claude` itself).
+
+**Why pluggable:**
+- Using the official CLIs directly keeps Ava on sanctioned auth paths by default.
+- Max has both Claude and Codex subscriptions. If one quota is exhausted, the other is a legitimate fallback.
+- Each backend already has mature session reuse, non-interactive modes, and internal rate-limit/compaction handling — Ava doesn't re-implement any of it.
+- Having `pi` available keeps the door open for its skill and extension ecosystem if/when Max decides to rely on them.
+
+**Backend interface** (`Backend` in `src/backends/types.ts`):
+```
+interface Backend {
+  name: "claude-code" | "codex" | "pi";
+  // invoke the CLI for a single email run; returns exit code + captured stdout/stderr
+  run(opts: {
+    cwd: string;                   // worktree path inside the sandbox
+    prompt: string;                // Ava-built prompt from log + memory
+    sessionPointerFile: string;    // e.g. threads/<tid>/claude-session-id
+    timeoutMs: number;
+  }): Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  // pattern classifier for exit-code analysis
+  classifyFailure(exitCode: number, stderr: string): FailureKind;
+}
+type FailureKind = "ok" | "rate-limit" | "auth" | "crash";
+```
+
+**Claude Code backend (`src/backends/claude-code.ts`):**
+- Command shape: `claude --resume "$(cat <sessionPointerFile>)" -p "<prompt>"` with `--cwd <cwd>`. On the very first invocation for a thread, there is no stored session id, so we instead invoke `claude -p "<prompt>" --cwd <cwd> --session-save <sessionPointerFile>` (where `--session-save` persists the new session's id to a file). Exact flag names will be verified against the installed Claude Code version during implementation; this spec commits to the behavior, not the precise flag.
+- Auth: `claude` reads `~/.claude/` inside the sandbox. The host's `~/.claude/` is mounted read-only into the container at `/home/ava/.claude/`. Max runs `claude` locally once to authenticate; Ava reuses that credential.
+- Classifier: stderr regex for Claude Code's 5-hour-quota error wording → `rate-limit`. Auth-expired wording → `auth`. Everything else nonzero → `crash`.
+
+**Codex backend (`src/backends/codex.ts`):**
+- Command shape: `codex resume --session "$(cat <sessionPointerFile>)" --cwd <cwd>` piping prompt on stdin, or the equivalent Codex non-interactive invocation. On first invocation: `codex` with `--session-save` analog. Flag names to be verified at implementation.
+- Model selection: GPT-5.4 via Codex's model flag (Max's ChatGPT subscription grants access to whatever tier he's on).
+- Auth: `codex` reads `~/.codex/` inside the sandbox. Host's `~/.codex/` is mounted read-only the same way as Claude Code's directory.
+- Classifier: stderr regex for Codex's quota-exhausted wording → `rate-limit`. Auth wording → `auth`. Else → `crash`.
+
+**pi backend (`src/backends/pi.ts`):**
+- Command shape: `pi --session /workspace/threads/<tid>/pi-session.jsonl --cwd <cwd> --no-context-files -p "<prompt>"`. Unlike Claude/Codex, pi's session file is an in-tree JSONL that Ava stores under `./data/threads/<tid>/`, so there's no separate pointer file — the session path IS the pointer.
+- Auth: `pi` reads `~/.pi/agent/auth.json` inside the sandbox. Host's `~/.pi/` is mounted read-only. Max authenticates pi once on the host with `pi --login`.
+- Classifier: stderr regex for pi-ai 429 wording → `rate-limit`. Auth-invalid wording → `auth`. Else → `crash`.
+- **TOS caveat recorded in `settings.json`:** choosing `pi` as the default or fallback backend produces a one-time warning in Ava's startup logs reminding Max of the risk. Never the default in the shipped config.
+
+**Backend selection policy:**
+- `settings.json` has `"backend": { "default": "claude-code", "fallback": "codex" }`.
+- Per-email override: if an inbound message body contains `@ava:use=codex` (or `@ava:use=claude-code`), that run uses the specified backend. Useful for ad-hoc comparison.
+- Automatic failover: if the default backend returns `rate-limit` AND `fallback` is configured, the SAME run retries immediately with the fallback backend. The session pointer is backend-scoped (`claude-session-id` vs `codex-session-id`) — they are independent histories, so the fallback starts "fresh" from the email prompt but with the same worktree state.
 
 **Per-run flow:**
-1. Read the newest inbound messages from `threads/<tid>/log.jsonl` that haven't been fed to pi yet.
-2. Build a prompt that includes: the new email body, sender, subject, worktree path, and thread-memory hints if present. If this is the first pi invocation for the session, also include global and thread-specific `MEMORY.md`. pi's own system prompt and configured skills handle everything else.
-3. Spawn inside the sandbox:
-   ```
-   docker exec -i ava-sandbox pi \
-       --session /workspace/threads/<tid>/session.jsonl \
-       --cwd /workspace/threads/<tid>/worktree \
-       --no-context-files \
-       -p "<prompt>"
-   ```
-   `-p` is pi's non-interactive "print" mode. `--no-context-files` is used because Ava injects the memory explicitly and does not want pi auto-loading host-level context. `--cwd` anchors pi at the per-thread worktree.
-4. Capture pi's stdout (the final text response) and stderr. Exit code 0 = success.
-5. Gather any files that pi wrote to `threads/<tid>/outgoing/` during the run and hand them, with the stdout text, to `gmail.sendReply`.
-6. Append the outbound reply metadata (Message-Id, timestamp, attachment list) to `log.jsonl`.
+1. Read the newest inbound messages from `threads/<tid>/log.jsonl` that haven't been fed to the agent yet.
+2. Build the prompt: new email body, sender, subject, worktree path, global + thread `MEMORY.md` contents on first run (later runs rely on the agent's own session memory).
+3. Ensure `threads/<tid>/outgoing/` is empty.
+4. Select backend per policy above.
+5. Spawn inside the sandbox with `docker exec` + the selected backend's command shape.
+6. Wait on exit with the configured timeout (default 20 min).
+7. Classify the result. On `ok`, scan `outgoing/`, attach everything to the Gmail reply, send.
+8. On `rate-limit`, apply the status-email rule (first hit per inbound message sends one email, subsequent hits silent) and either retry after the reported backoff or failover to the other backend.
+9. On `auth`, send the one-time "my auth is broken" email scoped to the failing backend ("Max: re-run `claude` locally to refresh Claude Code auth, then I'll retry").
+10. On `crash`, capture `threads/<tid>/crash.log` and send the generic "exited with code N — reply to retry" email.
+11. Append outbound reply metadata (Message-Id, backend used, attachments) to `log.jsonl`.
 
-**Error handling — exit codes and stderr patterns:**
-- **Exit 0**: normal completion. Reply is stdout.
-- **Rate-limit pattern in stderr** (detected by regex on known pi-ai 429 wording): apply the same behavior as before — first hit for the current inbound message triggers a one-time status email (`"hit Claude quota, resuming at <time> — I'll continue this thread automatically"`); subsequent hits are silent. Re-spawn the same `pi --session ...` after the retry-after window; the session file guarantees no lost progress.
-- **Auth-failure pattern in stderr**: send one email per thread in flight: `"My Claude auth is broken. Max/Brian: re-run pi-coding-agent /login, then link auth.json. I'll retry on my own after that."` Stop the run; do not retry until `auth.json` mtime changes.
-- **Any other nonzero exit**: capture stdout+stderr to `threads/<tid>/crash.log`, send a reply saying `"pi subprocess exited <code>. Logs at crash.log. Reply to retry."` — the next reply re-enqueues the thread; pi's session file contains whatever pi managed to persist before the crash.
-
-**Sending tool and message interception:**
-For v1 Ava does NOT intercept pi's tool calls. Email attachments happen via a simple convention: any file pi writes to the thread's `outgoing/` directory during the run gets attached to the reply. If in v2 we need fancier behavior (progress streaming, custom attach tool), we can either move to SDK-embed (Approach Y from brainstorm) or add a pi extension.
+**No tool interception in v1.** Attachments follow the `outgoing/` directory convention (Section 4.7). Fancier behavior is a v2 problem.
 
 ### 4.5 `sandbox.ts` — Docker sandbox adapter
 
-Adapted from `packages/mom/src/sandbox.ts`, with the Fedora/SELinux fix and pi-coding-agent preinstalled.
+Adapted from `packages/mom/src/sandbox.ts`, with the Fedora/SELinux fix and both agent CLIs preinstalled.
 
-- The sandbox is where `pi` runs. Ava's host process only reaches in via `docker exec` to launch `pi` and to perform a few host-side git operations on the bare repo (fetch, worktree add).
+- The sandbox is where `claude` and `codex` run. Ava's host process only reaches in via `docker exec` to launch the chosen backend and to perform a few host-side git operations on the bare repo (fetch, worktree add).
 - Setup script (`scripts/setup-sandbox.sh`) creates the container with:
   ```
   docker run -d --name ava-sandbox \
       -v "$(pwd)/data:/workspace:Z" \
+      -v "$HOME/.claude:/home/ava/.claude:ro,Z" \
+      -v "$HOME/.codex:/home/ava/.codex:ro,Z" \
+      -v "$HOME/.pi:/home/ava/.pi:ro,Z" \
       alpine:latest tail -f /dev/null
   ```
-  The `:Z` flag is mandatory on Fedora — without it, SELinux blocks the mount and all file I/O from the container returns EPERM. A `podman` alternative is documented for users who prefer Fedora's native tooling.
+  - The `:Z` flag is mandatory on Fedora; without it, SELinux blocks every bind-mount and all file I/O from the container returns EPERM. A `podman` alternative is documented for users who prefer Fedora's native tooling.
+  - `~/.claude`, `~/.codex`, and `~/.pi` are all mounted **read-only** so the sandbox can read Max's existing credentials but cannot corrupt or rotate them. Max refreshes any credential by running the corresponding CLI directly on the host, outside the sandbox.
 - Preseeds inside the container:
-  - `apk add git github-cli nodejs npm jq curl chromium` (chromium for any screenshot skill pi might use).
-  - `npm install -g @mariozechner/pi-coding-agent` — this is the key step; after it `pi` is on `$PATH`.
-  - `ln -s /workspace/auth.json /root/.pi/agent/auth.json` so `pi` finds the OAuth credentials.
+  - `apk add git github-cli nodejs npm jq curl chromium` (chromium for any screenshot skill the backend might use).
+  - `npm install -g @anthropic-ai/claude-code` — installs the `claude` CLI.
+  - Codex install (exact command depends on how OpenAI distributes the `codex` CLI — `npm install -g @openai/codex-cli` or equivalent; implementation verifies).
+  - `npm install -g @mariozechner/pi-coding-agent` — installs the `pi` CLI for the opt-in backend.
+  - Container user `ava` with home `/home/ava` so the mounted `~/.claude`, `~/.codex`, and `~/.pi` land at the paths each CLI expects by default.
   - `git clone --bare https://github.com/<actualvoice-org>/<repo>.git /workspace/repo.git`.
   - `gh auth login --with-token` using a dedicated Ava GitHub token (scoped to `repo` + `workflow` if Ava should read CI results).
-- There is no pi-mom-style tool-layer adapter inside Ava itself — pi ships its own `Bash`, `Read`, `Edit`, `Write`, etc. Ava's only sandbox responsibility is spawning `pi` and performing the handful of host-side git operations noted below.
+- There is no tool-layer adapter inside Ava itself — each backend ships its own tools. Ava's only sandbox responsibility is spawning the backend CLI and performing the handful of host-side git operations noted below.
 
 ### 4.6 `worktree.ts` — git worktree manager
 
@@ -228,17 +278,21 @@ T=0–30s  gmail.poll() finds the new message.
 T=30s  dispatcher picks up tid, calls gmail.sendAck(tid)
        → Brian receives: "On it. I'll reply when done. — Ava"
 
-T=30s  pi-invoker starts the Ava run for this thread:
+T=30s  agent-invoker starts the Ava run for this thread:
        1. worktree.ensureWorktree(tid)
        2. clear threads/<tid>/outgoing/
-       3. build prompt (email body + sender + worktree path +
+       3. select backend (default = claude-code per settings.json,
+          or override from @ava:use=<backend> directive in body)
+       4. build prompt (email body + sender + worktree path +
           memory hints on first run)
-       4. docker exec pi --session threads/<tid>/session.jsonl
-          --cwd /workspace/threads/<tid>/worktree -p "<prompt>"
-       5. pi runs its own agent loop: grep, read, edit, run
+       5. docker exec claude -p "<prompt>"
+          --cwd /workspace/threads/<tid>/worktree
+          [--resume $(cat claude-session-id) if exists
+           else --session-save claude-session-id]
+       6. claude runs its own agent loop: grep, read, edit, run
           dev server, screenshot, git commit+push, gh pr create,
           writes before.png + after.png to ./outgoing/
-       6. pi exits 0, stdout is the final text reply
+       7. claude exits 0, stdout is the final text reply
 
 T=~3m  gmail.sendReply(tid, stdoutText, [before.png, after.png])
        Brian receives the real reply, threaded with the ack.
@@ -247,12 +301,20 @@ T=later  Brian replies: "the after screenshot is cropped, retake it"
          → gmail.poll() picks up the new message in the same thread
          → appended to existing log.jsonl for tid
          → dispatcher enqueues tid again
-         → ack → pi is re-invoked with the SAME --session file, so
-           it already knows the PR, the branch, what screenshots it
-           took, and why. A new commit lands on the branch, the PR
-           picks it up, a new screenshot is attached.
+         → ack → claude is re-invoked with --resume $(cat
+           claude-session-id), so it already knows the PR, the
+           branch, what screenshots it took, and why. A new commit
+           lands on the branch, the PR picks it up, a new
+           screenshot is attached.
            (worktree still there, branch unchanged — PR gets a new
             commit, reply gets a new screenshot)
+
+If at any T the backend returns rate-limit:
+         → first hit for this inbound message → one status email
+         → immediately retry with fallback backend (codex) using
+           codex-session-id pointer (or fresh if none)
+         → if fallback also rate-limits → silent wait + retry per
+           backoff hint, no further emails until resolved
 ```
 
 ### Specific data decisions
@@ -261,8 +323,9 @@ T=later  Brian replies: "the after screenshot is cropped, retake it"
 - **Attachments**: 20 MB soft cap per reply. Everything in `threads/<tid>/outgoing/` is attached; overflow is pushed to the PR and linked.
 - **Deduplication**: Gmail `Message-Id` is the unique key in `log.jsonl`. Re-runs after a crash won't double-process.
 - **Quoted-history stripping**: inbound body strips everything below `^On .* wrote:$` and similar variants before it's built into the pi prompt.
-- **Session vs log**: `log.jsonl` is Ava's email transport log (what came in, what went out, with headers and metadata). `session.jsonl` is pi's agent session (conversation, tool calls, results). Keeping them separate means a log corruption doesn't destroy the agent's memory, and vice versa.
-- **Worktree restart**: on crash recovery, pi's first action in a resumed session is already to orient itself (it has `git status` as a tool). No Ava-side special handling required.
+- **Session vs log**: `log.jsonl` is Ava's email transport log (headers, allowlist decisions, outbound metadata). Each backend keeps its own session file in its own place (Claude Code under `~/.claude/projects/`, Codex under `~/.codex/sessions/`). Ava only stores the session **id** per thread per backend (`claude-session-id`, `codex-session-id`), so if a log is lost the agent memory is still intact, and vice versa.
+- **Worktree restart**: on crash recovery, the backend's first action in a resumed session is already to orient itself (`git status` is a built-in tool in both). No Ava-side special handling required.
+- **`@ava:use=` directive**: a line of the form `@ava:use=codex` (or `=claude-code`) anywhere in the inbound body forces that backend for the run. Case-insensitive, stripped before the body is shown to the agent. Invalid values fall back to the configured default with a one-line note in the reply.
 
 ## 6. Error handling
 
@@ -274,11 +337,11 @@ See Section 4.4 for LLM rate-limit and auth-failure flows.
 - OAuth refresh-token invalid → stop polling, print recovery instructions to console. No email path available.
 - Send failure → retry 3x with backoff, then persist to `threads/<tid>/pending-replies/` and retry on next poll tick.
 
-**Sandbox / pi subprocess errors:**
+**Sandbox / agent subprocess errors:**
 - Container stopped → `main.ts` starts it.
 - Container missing entirely → exit with clear error, no Gmail polling.
-- `pi` subprocess nonzero exit → as covered in 4.4: rate-limit / auth-failure / generic-crash patterns each produce a specific user-facing behavior.
-- `pi` wedged (no stdout or exit for longer than the configured per-run timeout, default 20 min) → kill the subprocess, send the generic crash reply, session file is retained so the user's reply restarts from the last committed point.
+- Backend subprocess nonzero exit → as covered in 4.4: `rate-limit` / `auth` / `crash` classifier outcomes each produce specific user-facing behavior (automatic fallover, one-time auth email, or generic crash email respectively).
+- Backend wedged (no stdout or exit for longer than the configured per-run timeout, default 20 min) → kill the subprocess, send the generic crash reply, the backend's session id is preserved so the user's reply resumes from whatever the CLI committed before the kill.
 
 **Git / worktree errors:**
 - `git push` rejected → rebase on `origin/main` once, retry, else report in reply.
@@ -301,16 +364,20 @@ See Section 4.4 for LLM rate-limit and auth-failure flows.
 - `gmail.allowlist.test.ts`: sender + DKIM/SPF decision matrix; spoofing cases.
 - `dispatcher.test.ts`: serialization under burst, at-most-one-per-thread, FIFO within a thread.
 - `worktree.test.ts`: ensure/cleanup/prune against a local bare repo fixture.
-- `pi-invoker.test.ts`: prompt builder assembles the right string from log.jsonl + memory files. Stderr-pattern matching for rate-limit, auth-failure, and generic-crash classifiers. Uses a fake `pi` shim (a shell script) for end-to-end exit-code behavior without invoking the real pi-coding-agent.
-- `reply-format.test.ts`: pi-stdout-to-email-body normalizer (code fences preserved, truncation, ANSI-escape stripping, Unicode).
+- `prompt-builder.test.ts`: prompt is assembled correctly from log.jsonl + memory + directive stripping (`@ava:use=`).
+- `backend-claude-code.test.ts`: command-shape construction (with and without existing session id), classifier returns correct `FailureKind` for known stderr patterns (rate-limit, auth-expired, generic crash). Uses a fake `claude` shim (shell script) so no real LLM call is made.
+- `backend-codex.test.ts`: same shape as the Claude Code backend test, against a fake `codex` shim.
+- `backend-pi.test.ts`: same shape, against a fake `pi` shim, plus verifies the `--session <path>` convention (pi-session.jsonl inline) rather than the pointer-file pattern used by the two official CLIs.
+- `backend-policy.test.ts`: selection honors `settings.json` default, honors the `@ava:use=` directive for all three backends, triggers fallback on `rate-limit` from the primary and succeeds on the fallback, emits the pi TOS warning only when pi is configured as default or fallback.
+- `reply-format.test.ts`: agent-stdout-to-email-body normalizer (code fences preserved, truncation, ANSI-escape stripping, Unicode).
 - `outgoing-scan.test.ts`: after a run, all files in `threads/<tid>/outgoing/` are attached; total-size cap enforced; directory cleared on next run.
 
-No mocked-LLM tests at any level. pi-coding-agent's own test suite covers the agent loop.
+No mocked-LLM tests at any level. Each vendor CLI owns its agent loop.
 
 ### Tier 2 — integration tests (`test/integration/`, manual, not in CI)
 - `gmail-roundtrip.ts`: real email round-trip using a second Gmail OAuth credential. Sends from test account, waits for ack and final reply, asserts threading headers. Tagged `@real-gmail`.
-- `sandbox-smoke.ts`: stands up `ava-sandbox` on the Fedora host, validates `:Z` mount, verifies `pi --version` runs inside the container against the mounted `auth.json`, runs `ensureWorktree` against a disposable GitHub fixture repo, pushes and deletes a throwaway branch. Tagged `@real-docker`. Run once after setup and after any infra change.
-- `pi-session-reuse.ts`: two sequential `pi` runs against the same `--session <file>`. Assert the second invocation sees the first's outputs in its conversation history. Tagged `@real-pi`.
+- `sandbox-smoke.ts`: stands up `ava-sandbox` on the Fedora host, validates `:Z` mount, verifies `claude --version`, `codex --version`, and `pi --version` all run inside the container against the mounted credential directories, runs `ensureWorktree` against a disposable GitHub fixture repo, pushes and deletes a throwaway branch. Tagged `@real-docker`. Run once after setup and after any infra change.
+- `backend-session-reuse.ts`: two sequential runs per backend against the same session identifier. Assert the second invocation sees the first's outputs in its conversation history. Tagged `@real-claude`, `@real-codex`, and `@real-pi` so each can be skipped independently.
 
 ### Tier 3 — live dogfood
 Before pointing Ava at the real ActualVoice repo, run against a disposable `actualvoice-ava-staging` repo for roughly a week. Max and Brian send 5–10 tasks per day. Tune system prompt and `MEMORY.md` based on observed failures.
@@ -330,4 +397,5 @@ These are known gaps that v1 does **not** address. They're tracked here so futur
 - **Scheduled wake-ups**: pi-mom's events system would let Ava run a nightly test suite or a weekly dependency bump. Good v2 candidate.
 - **Artifacts server / dashboard**: replacement for "screenshots via email" when an HTML visualization is a better deliverable.
 - **Multi-tenant / team-scaling**: if ActualVoice grows past the two of you, the strict allowlist becomes a bottleneck. The natural next step is Approach 4B from brainstorm (domain allowlist with CC context).
-- **Cross-provider fallback**: if Claude quota is a real operational constraint, pi-ai supports swapping to another provider. Not needed at current usage levels.
+- **Additional backends**: `gemini` CLI, `ollama`-local, etc. Backend interface is already designed to accept them.
+- **Cross-backend session bridging**: if Ava wants Codex to pick up where Claude left off mid-thread, we'd need to translate history across session formats. Punted to v2.
