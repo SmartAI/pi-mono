@@ -1,0 +1,33 @@
+{
+	"name": "@actualvoice/ava",
+	"version": "0.0.1",
+	"private": true,
+	"description": "Email-driven AI teammate for ActualVoice",
+	"type": "module",
+	"bin": {
+		"ava": "./dist/main.js"
+	},
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "tsgo -p tsconfig.build.json && shx chmod +x dist/main.js",
+		"dev": "tsgo -p tsconfig.build.json --watch --preserveWatchOutput",
+		"test": "vitest --run",
+		"test:watch": "vitest"
+	},
+	"dependencies": {
+		"googleapis": "^140.0.0",
+		"mailparser": "^3.6.0",
+		"p-queue": "^8.0.0",
+		"proper-lockfile": "^4.1.2"
+	},
+	"devDependencies": {
+		"@types/mailparser": "^3.4.4",
+		"@types/node": "^24.3.0",
+		"@types/proper-lockfile": "^4.1.4",
+		"typescript": "^5.7.3",
+		"vitest": "^3.2.4"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}
