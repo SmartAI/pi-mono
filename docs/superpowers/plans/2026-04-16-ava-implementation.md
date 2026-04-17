@@ -1493,7 +1493,10 @@ export interface BackendRunOpts {
   prompt: string;
   dataDir: string;                   // host path to ./data/, used to persist session pointer
   timeoutMs: number;
-  sandboxExec: (argv: string[], opts: { env?: Record<string, string>; timeoutMs: number }) => Promise<BackendRunResult>;
+  sandboxExec: (
+    argv: string[],
+    opts: { env?: Record<string, string>; timeoutMs: number; workdir?: string },
+  ) => Promise<BackendRunResult>;
 }
 
 export interface BackendRunResult {
@@ -1646,19 +1649,26 @@ describe("ClaudeCodeBackend", () => {
     expect(b.classify({ exitCode: 9, stdout: "", stderr: "segfault", durationMs: 1, timedOut: false })).toBe("crash");
   });
 
-  it("on first run, captures session id via output file and persists it", async () => {
+  it("on first run, generates a UUID, writes it to the pointer, and passes --session-id <uuid>", async () => {
     const b = new ClaudeCodeBackend();
     const sessionFile = join(dir, "threads", "T-1", "claude-session-id");
+    let capturedArgv: string[] = [];
     const result = await b.run({
       threadId: "T-1",
       cwdInContainer: "/workspace/threads/T-1/worktree",
       prompt: "hello",
       dataDir: dir,
       timeoutMs: 5_000,
-      sandboxExec: makeShimExec({ FAKE_STDOUT: "final reply text", FAKE_WRITE: sessionFile }),
+      sandboxExec: async (argv) => {
+        capturedArgv = argv;
+        return { exitCode: 0, stdout: "final reply text", stderr: "", durationMs: 1, timedOut: false };
+      },
     });
     expect(result.exitCode).toBe(0);
-    expect((await readFile(sessionFile, "utf-8")).trim()).toBe("fake-session-id");
+    const storedId = (await readFile(sessionFile, "utf-8")).trim();
+    expect(storedId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(capturedArgv).toContain("--session-id");
+    expect(capturedArgv).toContain(storedId);
   });
 
   it("on subsequent runs, passes the stored session id via --resume", async () => {
@@ -1681,6 +1691,26 @@ describe("ClaudeCodeBackend", () => {
     expect(capturedArgv).toContain("--resume");
     expect(capturedArgv).toContain("existing-id");
   });
+
+  it("forwards the worktree path to sandboxExec as workdir, not as a CLI flag", async () => {
+    const b = new ClaudeCodeBackend();
+    let capturedOpts: { workdir?: string } = {};
+    let capturedArgv: string[] = [];
+    await b.run({
+      threadId: "T-1",
+      cwdInContainer: "/workspace/threads/T-1/worktree",
+      prompt: "hi",
+      dataDir: dir,
+      timeoutMs: 5_000,
+      sandboxExec: async (argv, opts) => {
+        capturedArgv = argv;
+        capturedOpts = opts;
+        return { exitCode: 0, stdout: "", stderr: "", durationMs: 1, timedOut: false };
+      },
+    });
+    expect(capturedOpts.workdir).toBe("/workspace/threads/T-1/worktree");
+    expect(capturedArgv).not.toContain("--cwd"); // verified absent by spike
+  });
 });
 ```
 
@@ -1691,21 +1721,25 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement the backend**
 
+Spike findings from Task 1 (see `packages/ava/docs/cli-flags.md`):
+- Claude Code has **no `--cwd` flag.** Set working directory via `docker exec --workdir` — Ava's `sandboxExec` helper supports this through the BackendRunOpts.cwdInContainer parameter it passes on.
+- Claude Code has **no `--output-session-id`.** Ava pre-generates a UUID on first run, passes it as `--session-id <uuid>`, and persists it to the pointer file.
+- On subsequent runs, pass `--resume <uuid>` where the uuid comes from the pointer file.
+
 Create `packages/ava/src/backends/claude-code.ts`:
 
 ```ts
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import type { Backend, BackendRunOpts, BackendRunResult } from "./types.js";
 import type { FailureKind } from "../types.js";
 
-// NOTE: flag names in ARGV_* constants match what Task 1 verified in docs/cli-flags.md.
-// Update here in one place if the CLI changes.
+// NOTE: flag names match Task 1 verification. Update here in one place if the CLI changes.
 const ARGV_PRINT = "-p";
-const ARGV_CWD = "--cwd";
 const ARGV_RESUME = "--resume";
-const ARGV_OUTPUT_SESSION = "--output-session-id";
+const ARGV_SESSION_ID = "--session-id";
 const ARGV_SKIP_PERMS = "--dangerously-skip-permissions";
 
 const RATE_LIMIT_RX = /rate\s*limit|quota|429|retry after/i;
@@ -1716,15 +1750,19 @@ export class ClaudeCodeBackend implements Backend {
 
   async run(opts: BackendRunOpts): Promise<BackendRunResult> {
     const sessionFile = sessionPath(opts);
-    const argv: string[] = ["claude", ARGV_SKIP_PERMS, ARGV_CWD, opts.cwdInContainer];
+    const argv: string[] = ["claude", ARGV_SKIP_PERMS];
     if (existsSync(sessionFile)) {
       const id = (await readFile(sessionFile, "utf-8")).trim();
       argv.push(ARGV_RESUME, id);
     } else {
-      argv.push(ARGV_OUTPUT_SESSION, sessionFile);
+      const id = randomUUID();
+      await mkdir(dirname(sessionFile), { recursive: true });
+      await writeFile(sessionFile, id);
+      argv.push(ARGV_SESSION_ID, id);
     }
     argv.push(ARGV_PRINT, opts.prompt);
-    return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs });
+    // cwd is forwarded to docker exec via sandboxExec; not a CLI flag.
+    return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
   }
 
   classify(r: BackendRunResult): FailureKind {
@@ -1836,39 +1874,59 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Create `packages/ava/src/backends/codex.ts` (consulting `packages/ava/docs/cli-flags.md` from Task 2 for the actual flag names):
+Spike findings (see `packages/ava/docs/cli-flags.md` Codex section):
+- Codex is **subcommand-based**, not flag-based. Non-interactive is `codex exec [OPTS] "<PROMPT>"`; resume is `codex exec resume <session-uuid> "<PROMPT>"`.
+- **First-run session UUID cannot be pre-assigned.** Codex generates it internally. To capture it, pass `--json` so Codex streams JSONL events; parse the first line that includes a `session_id` field; persist to the `codex-session-id` pointer.
+- `-o, --output-last-message <FILE>` captures the final reply text to a file (cleaner than parsing from stdout when `--json` is on).
+- `-C, --cd <DIR>` exists on `codex exec` (first run) but NOT on `codex exec resume`. Since we're setting cwd via `docker exec --workdir` anyway, we do not pass `-C` at all.
+- `-m, --model <MODEL>` confirmed; skip-permissions flag is `--dangerously-bypass-approvals-and-sandbox`.
+
+Create `packages/ava/src/backends/codex.ts`:
 
 ```ts
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, writeFile, mkdir, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Backend, BackendRunOpts, BackendRunResult } from "./types.js";
 import type { FailureKind } from "../types.js";
 
-const ARGV_PRINT_MODE = "-q";           // replace with what cli-flags.md says
-const ARGV_CWD = "--cwd";
-const ARGV_RESUME = "resume";
-const ARGV_MODEL = "--model";
-const ARGV_MODEL_VALUE = "gpt-5.4";
-const ARGV_OUTPUT_SESSION = "--output-session-id";
+const MODEL = "gpt-5.4";
+const SKIP_PERMS = "--dangerously-bypass-approvals-and-sandbox";
 
 const RATE_LIMIT_RX = /rate\s*limit|quota|429|too many requests/i;
 const AUTH_RX = /401\b|unauthorized|please (re-?)?login|auth.*(expired|invalid)/i;
+
+const SESSION_EVENT_RX = /"session_id"\s*:\s*"([0-9a-f-]{36})"/i;
 
 export class CodexBackend implements Backend {
   readonly name = "codex" as const;
 
   async run(opts: BackendRunOpts): Promise<BackendRunResult> {
     const sessionFile = join(opts.dataDir, "threads", opts.threadId, "codex-session-id");
-    const argv: string[] = ["codex"];
-    if (existsSync(sessionFile)) {
+    const outFile = join(opts.dataDir, "threads", opts.threadId, "codex-last.txt");
+    await mkdir(dirname(sessionFile), { recursive: true });
+    if (existsSync(outFile)) await unlink(outFile);
+
+    const argv: string[] = ["codex", "exec"];
+    const resuming = existsSync(sessionFile);
+    if (resuming) {
       const id = (await readFile(sessionFile, "utf-8")).trim();
-      argv.push(ARGV_RESUME, id);
-    } else {
-      argv.push(ARGV_OUTPUT_SESSION, sessionFile);
+      argv.splice(2, 0, "resume", id);    // argv becomes: codex exec resume <id>
     }
-    argv.push(ARGV_MODEL, ARGV_MODEL_VALUE, ARGV_CWD, opts.cwdInContainer, ARGV_PRINT_MODE, opts.prompt);
-    return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs });
+    argv.push("-m", MODEL, SKIP_PERMS, "--json", "-o", outFile, opts.prompt);
+
+    const result = await opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
+
+    if (!resuming && result.exitCode === 0) {
+      const sid = extractSessionId(result.stdout) ?? extractSessionId(result.stderr);
+      if (sid) await writeFile(sessionFile, sid);
+    }
+
+    if (result.exitCode === 0 && existsSync(outFile)) {
+      // Prefer the captured reply file over stdout (stdout is JSONL events with --json).
+      result.stdout = await readFile(outFile, "utf-8");
+    }
+    return result;
   }
 
   classify(r: BackendRunResult): FailureKind {
@@ -1877,6 +1935,11 @@ export class CodexBackend implements Backend {
     if (RATE_LIMIT_RX.test(r.stderr)) return "rate-limit";
     return "crash";
   }
+}
+
+function extractSessionId(text: string): string | null {
+  const m = text.match(SESSION_EVENT_RX);
+  return m ? m[1] : null;
 }
 ```
 
@@ -1918,23 +1981,27 @@ describe("PiBackend", () => {
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  it("passes --session pointing at the in-tree pi-session.jsonl", async () => {
+  it("passes --session pointing at the in-tree pi-session.jsonl and forwards cwd via workdir", async () => {
     const b = new PiBackend();
     let argvSeen: string[] = [];
+    let optsSeen: { workdir?: string } = {};
     await b.run({
       threadId: "T-1",
       cwdInContainer: "/workspace/threads/T-1/worktree",
       prompt: "hi",
       dataDir: dir,
       timeoutMs: 5_000,
-      sandboxExec: async (argv) => {
+      sandboxExec: async (argv, opts) => {
         argvSeen = argv;
+        optsSeen = opts;
         return { exitCode: 0, stdout: "", stderr: "", durationMs: 1, timedOut: false };
       },
     });
     expect(argvSeen).toContain("--session");
     const sessionIdx = argvSeen.indexOf("--session");
     expect(argvSeen[sessionIdx + 1]).toMatch(/pi-session\.jsonl$/);
+    expect(argvSeen).not.toContain("--cwd"); // verified absent by spike
+    expect(optsSeen.workdir).toBe("/workspace/threads/T-1/worktree");
   });
 
   it("classifies pi-ai rate-limit stderr", () => {
@@ -1952,6 +2019,8 @@ Run: `cd packages/ava && npx vitest run test/backends/pi.test.ts`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
+
+Spike findings (see `cli-flags.md` pi section): `--cwd` does NOT exist on pi. Set cwd via `docker exec --workdir` (the `sandboxExec` helper takes `workdir` in its opts, and pi reads the spawn cwd correctly).
 
 Create `packages/ava/src/backends/pi.ts`:
 
@@ -1971,11 +2040,10 @@ export class PiBackend implements Backend {
     const argv: string[] = [
       "pi",
       "--session", sessionPath,
-      "--cwd", opts.cwdInContainer,
       "--no-context-files",
       "-p", opts.prompt,
     ];
-    return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs });
+    return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
   }
 
   classify(r: BackendRunResult): FailureKind {
@@ -2398,6 +2466,7 @@ import type { BackendRunResult } from "./backends/types.js";
 export interface SandboxExecOpts {
   env?: Record<string, string>;
   timeoutMs: number;
+  workdir?: string;      // forwarded as `docker exec --workdir <path>` (none of the agent CLIs have --cwd)
 }
 
 export interface SandboxConfig {
@@ -2407,6 +2476,7 @@ export interface SandboxConfig {
 export function makeSandboxExec(cfg: SandboxConfig) {
   return async (argv: string[], opts: SandboxExecOpts): Promise<BackendRunResult> => {
     const dockerArgv = ["exec", "-i"];
+    if (opts.workdir) dockerArgv.push("--workdir", opts.workdir);
     for (const [k, v] of Object.entries(opts.env ?? {})) {
       dockerArgv.push("-e", `${k}=${v}`);
     }
