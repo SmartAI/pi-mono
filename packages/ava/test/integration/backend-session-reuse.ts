@@ -9,7 +9,6 @@
  */
 import { mkdtempSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeBackend } from "../../src/backends/claude-code.js";
 import { CodexBackend } from "../../src/backends/codex.js";
@@ -27,13 +26,23 @@ function pick(name: string): Backend {
 async function main(): Promise<void> {
 	const backendName = process.env.AVA_BACKEND ?? "claude-code";
 	const backend = pick(backendName);
-	const dataDir = mkdtempSync(join(tmpdir(), "ava-it-"));
+	// dataDir must be a subdir of AVA_DATA_DIR so it's inside the container's /workspace mount.
+	// Codex's `-o` output file and pi's `--session <path>` both require paths visible inside
+	// the sandbox, not arbitrary host tempdirs.
+	const hostRoot = process.env.AVA_DATA_DIR;
+	if (!hostRoot) {
+		console.error("AVA_DATA_DIR must be set (e.g. the same value passed to setup-sandbox.sh)");
+		process.exit(2);
+	}
+	const dataDir = mkdtempSync(join(hostRoot, "it-"));
+	const containerDataDir = `/workspace/${dataDir.slice(hostRoot.length + 1)}`;
 	await mkdir(join(dataDir, "threads", "T-it"), { recursive: true });
 	const exec = makeSandboxExec({ containerName: process.env.AVA_CONTAINER ?? "ava-sandbox" });
 
 	const r1 = await backend.run({
 		threadId: "T-it",
 		cwdInContainer: "/workspace",
+		containerDataDir,
 		prompt: "My favorite number is 73. Please reply with just the word 'noted'.",
 		dataDir,
 		timeoutMs: 120_000,
@@ -45,6 +54,7 @@ async function main(): Promise<void> {
 	const r2 = await backend.run({
 		threadId: "T-it",
 		cwdInContainer: "/workspace",
+		containerDataDir,
 		prompt: "What is my favorite number? Reply with only the number.",
 		dataDir,
 		timeoutMs: 120_000,

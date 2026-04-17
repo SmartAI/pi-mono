@@ -39,14 +39,15 @@ describe("CodexBackend", () => {
 		).toBe("auth");
 	});
 
-	it("first run: extracts session id from JSONL stdout and persists it to pointer", async () => {
+	it("first run: extracts thread id from JSONL stdout and persists it to pointer", async () => {
 		const b = new CodexBackend();
 		const sessionFile = join(dir, "threads", "T-1", "codex-session-id");
 		const fakeJsonlStdout =
-			'{"type":"session_started","session_id":"abcd1234-5678-90ef-1234-567890abcdef"}\n{"type":"message","content":"hi"}\n';
+			'{"type":"thread.started","thread_id":"abcd1234-5678-90ef-1234-567890abcdef"}\n{"type":"message","content":"hi"}\n';
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
@@ -67,12 +68,13 @@ describe("CodexBackend", () => {
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {
 				argvSeen = argv;
-				return { exitCode: 0, stdout: '{"session_id":"x-y"}\n', stderr: "", durationMs: 1, timedOut: false };
+				return { exitCode: 0, stdout: '{"thread_id":"x-y"}\n', stderr: "", durationMs: 1, timedOut: false };
 			},
 		});
 		expect(argvSeen.slice(0, 2)).toEqual(["codex", "exec"]);
@@ -94,6 +96,7 @@ describe("CodexBackend", () => {
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "second",
 			dataDir: dir,
 			timeoutMs: 5_000,
@@ -112,12 +115,13 @@ describe("CodexBackend", () => {
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (_argv, opts) => {
 				optsSeen = opts;
-				return { exitCode: 0, stdout: '{"session_id":"x"}\n', stderr: "", durationMs: 1, timedOut: false };
+				return { exitCode: 0, stdout: '{"thread_id":"x"}\n', stderr: "", durationMs: 1, timedOut: false };
 			},
 		});
 		expect(optsSeen.workdir).toBe("/workspace/threads/T-1/worktree");
@@ -130,6 +134,7 @@ describe("CodexBackend", () => {
 		const result = await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,

@@ -20,6 +20,7 @@ export interface AgentInvokerDeps {
 	ensureWorktree: (tid: string) => Promise<string>;
 	sandboxExec: BackendRunOpts["sandboxExec"];
 	cwdInContainer: (tid: string) => string;
+	containerDataDir: string; // e.g. "/workspace" — container-side path that mirrors Store.dataDir
 	sendAck: (tid: string, originalMessageId: string, to: string, subject: string) => Promise<void>;
 	sendReply: (reply: OutboundReply) => Promise<string>;
 	sendStatus: (tid: string, text: string, to: string, inReplyTo: string, subject: string) => Promise<void>;
@@ -123,6 +124,7 @@ async function runBackend(
 		cwdInContainer: deps.cwdInContainer(tid),
 		prompt,
 		dataDir: deps.store.dataDir,
+		containerDataDir: deps.containerDataDir,
 		timeoutMs: deps.settings.timeouts.perRunMs,
 		sandboxExec: deps.sandboxExec,
 	});

@@ -9,7 +9,9 @@ export class PiBackend implements Backend {
 	readonly name = "pi" as const;
 
 	async run(opts: BackendRunOpts): Promise<BackendRunResult> {
-		const sessionPath = join(opts.dataDir, "threads", opts.threadId, "pi-session.jsonl");
+		// pi runs inside the container and reads/writes --session via its own process,
+		// so the path we pass must be the container-visible path, not the host path.
+		const sessionPath = join(opts.containerDataDir, "threads", opts.threadId, "pi-session.jsonl");
 		const argv: string[] = ["pi", "--session", sessionPath, "--no-context-files", "-p", opts.prompt];
 		return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
 	}

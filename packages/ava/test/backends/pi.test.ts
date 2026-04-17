@@ -20,6 +20,7 @@ describe("PiBackend", () => {
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,

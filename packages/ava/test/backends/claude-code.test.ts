@@ -56,6 +56,7 @@ describe("ClaudeCodeBackend", () => {
 		const result = await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hello",
 			dataDir: dir,
 			timeoutMs: 5_000,
@@ -79,6 +80,7 @@ describe("ClaudeCodeBackend", () => {
 		const result = await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "second message",
 			dataDir: dir,
 			timeoutMs: 5_000,
@@ -99,6 +101,7 @@ describe("ClaudeCodeBackend", () => {
 		await b.run({
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
+			containerDataDir: dir,
 			prompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,

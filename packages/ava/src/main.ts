@@ -71,7 +71,8 @@ async function main(): Promise<void> {
 	});
 
 	const sandboxExec = makeSandboxExec({ containerName });
-	const cwdInContainer = (tid: string) => `/workspace/threads/${tid}/worktree`;
+	const containerDataDir = "/workspace";
+	const cwdInContainer = (tid: string) => `${containerDataDir}/threads/${tid}/worktree`;
 	const backends = defaultBackends();
 
 	const dispatcher = new Dispatcher(async (tid) => {
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
 				ensureWorktree: (id) => wm.ensureWorktree(id),
 				sandboxExec,
 				cwdInContainer,
+				containerDataDir,
 				sendAck: async (threadId, originalId, to, subject) => {
 					await gmail.send({
 						threadId,
