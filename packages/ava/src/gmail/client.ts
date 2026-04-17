@@ -87,7 +87,7 @@ async function buildMime(opts: {
 	const boundary = `ava-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 	const headers = [
 		`To: ${opts.to}`,
-		`Subject: ${opts.subject}`,
+		`Subject: ${encodeHeader(opts.subject)}`,
 		`In-Reply-To: ${opts.inReplyTo}`,
 		`References: ${opts.references.join(" ")}`,
 		`MIME-Version: 1.0`,
@@ -113,5 +113,16 @@ async function buildMime(opts: {
 		);
 	}
 	parts.push(`--${boundary}--`, "");
-	return Buffer.from(headers.join("\r\n") + "\r\n" + parts.join("\r\n"), "utf-8");
+	return Buffer.from(`${headers.join("\r\n")}\r\n${parts.join("\r\n")}`, "utf-8");
+}
+
+/**
+ * RFC 2047 encoding for MIME headers that contain non-ASCII. Without this,
+ * UTF-8 bytes in a header get interpreted as Latin-1 by some clients and
+ * render as mojibake ("—" → "Ã¢Â€Â\"", etc.).
+ */
+function encodeHeader(raw: string): string {
+	if (/^[\x20-\x7e]*$/.test(raw)) return raw; // pure ASCII — no encoding needed
+	const b64 = Buffer.from(raw, "utf-8").toString("base64");
+	return `=?UTF-8?B?${b64}?=`;
 }
