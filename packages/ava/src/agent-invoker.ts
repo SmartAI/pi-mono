@@ -22,7 +22,6 @@ export interface AgentInvokerDeps {
 	cwdInContainer: (tid: string) => string;
 	containerDataDir: string; // e.g. "/workspace" — container-side path that mirrors Store.dataDir
 	selfAddress: string; // Ava's own Gmail mailbox — excluded from reply-all CC list
-	sendAck: (tid: string, originalMessageId: string, to: string, cc: string[], subject: string) => Promise<void>;
 	sendReply: (reply: OutboundReply) => Promise<string>;
 	sendStatus: (
 		tid: string,
@@ -48,14 +47,6 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	if (!newestInbound) return;
 
 	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress, deps.settings.replyDefaults.alwaysCc);
-
-	await deps.sendAck(
-		tid,
-		newestInbound.gmailMessageId,
-		recipients.to,
-		recipients.cc,
-		reSubject(newestInbound.subject),
-	);
 
 	await deps.ensureWorktree(tid);
 	await clearOutgoing(store.threadPathAbs(tid));

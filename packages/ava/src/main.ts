@@ -90,18 +90,6 @@ async function main(): Promise<void> {
 					cwdInContainer,
 					containerDataDir,
 					selfAddress,
-					sendAck: async (threadId, originalId, to, cc, subject) => {
-						await gmail.send({
-							threadId,
-							to,
-							cc,
-							subject,
-							bodyText: "On it. I'll reply when done.\n— Ava",
-							inReplyTo: originalId,
-							references: [originalId],
-							attachments: [],
-						});
-					},
 					sendReply: async (reply) => {
 						return gmail.send({
 							threadId: reply.threadId,
