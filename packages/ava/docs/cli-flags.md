@@ -394,3 +394,121 @@ codex exec resume \
 | `--model gpt-5.4`                          | Confirmed: `-m` / `--model <MODEL>`                                 | No change needed                                                |
 | `codex resume --session <id>`              | Correct subcommand is `codex exec resume <uuid>` (positional)       | Use `codex exec resume <uuid>` not `codex resume --session <id>` |
 | Caller controls session ID on first run   | Codex assigns UUID internally; no `--session-id` flag               | Ava must parse session UUID from `--json` JSONL output          |
+
+---
+
+## pi-coding-agent
+
+Verified against `pi` version **0.67.6** on 2026-04-16.
+
+Raw version output:
+
+```
+0.67.6
+```
+
+pi-coding-agent uses a **session file** (not session ID) model: the caller specifies a path to a session file, which is created on first run and reused on subsequent runs.
+
+---
+
+### Non-interactive / print mode
+
+```
+--print, -p
+```
+
+Prints the response and exits. Required for all non-interactive (scripted) use.
+
+**Plan assumption:** `-p` / `--print` — **confirmed correct.**
+
+---
+
+### Session file path
+
+```
+--session <path>
+```
+
+Path to a session file (e.g., `/workspace/threads/<tid>/pi-session.jsonl`). The file is created on first run and reused on subsequent runs. Both creation and resumption use the same flag and path.
+
+**Plan assumption:** `--session <path|uuid>` — **partially correct.** The flag exists and is `--session`, but it takes a file path (not a UUID). The same path works for both first run (creates file) and resume (reuses file).
+
+---
+
+### Skip context files
+
+```
+--no-context-files, -nc
+```
+
+Disables discovery and loading of `AGENTS.md` and `CLAUDE.md` files.
+
+**Plan assumption:** `--no-context-files` — **confirmed correct.**
+
+---
+
+### Set working directory
+
+There is **no** `--cwd <path>` flag in the `pi` CLI.
+
+The working directory is determined by the shell's current directory when `pi` is invoked. To control cwd, the caller must `cd` (or use `subprocess` options that set cwd) before spawning the process.
+
+**Plan assumption:** `--cwd <path>` — **does not exist.** Use OS-level cwd on the spawned process instead.
+
+---
+
+### Authentication
+
+pi-coding-agent reads OAuth credentials from `~/.pi/agent/auth.json`. To authenticate:
+
+```
+/login
+```
+
+In interactive mode, users can run the `/login` command (slash command within the TUI) to authenticate with OAuth providers. There is **no** `--login` CLI flag; authentication must be set up interactively in the TUI or credentials pre-stored in `~/.pi/agent/auth.json`.
+
+**Plan assumption:** `pi --login` flag or command — **does not exist.** Authentication is interactive only via `/login` in the TUI or pre-stored credentials in the config directory.
+
+---
+
+## pi-coding-agent Command Shapes
+
+### First run (create new session file)
+
+```sh
+pi \
+  --session /workspace/threads/<tid>/pi-session.jsonl \
+  --no-context-files \
+  -p "$(cat prompt.txt)"
+```
+
+- `--session <path>` specifies the session file path (created if it doesn't exist).
+- `--no-context-files` skips loading AGENTS.md and CLAUDE.md.
+- `-p` puts pi into non-interactive (print) mode.
+- There is no `--cwd` flag; set the process working directory via OS spawn options.
+- Credentials must be pre-stored in `~/.pi/agent/auth.json` or set up interactively beforehand.
+
+### Subsequent runs (resume existing session file)
+
+```sh
+pi \
+  --session /workspace/threads/<tid>/pi-session.jsonl \
+  --no-context-files \
+  -p "$(cat next-prompt.txt)"
+```
+
+- Same command shape as first run — reuse the same `--session <path>`.
+- pi automatically detects the file exists and resumes from it.
+- No explicit "resume" flag needed.
+
+---
+
+## Discrepancies from Plan Assumptions (pi-coding-agent)
+
+| Assumption in spec              | Reality                                                    | Impact on Task 18                                      |
+|---------------------------------|------------------------------------------------------------|--------------------------------------------------------|
+| `--session <path\|uuid>` flag   | Confirmed: `--session <path>` (file path, not UUID)        | Use file paths, not UUIDs                              |
+| `--cwd <path>` flag exists      | Flag does not exist                                        | Set cwd via OS spawn options, not a CLI flag           |
+| `-p` / `--print` exists         | Confirmed                                                  | No change needed                                       |
+| `--no-context-files` exists     | Confirmed: `--no-context-files` / `-nc`                    | No change needed                                       |
+| `pi --login` flag or command    | Does not exist — use `/login` in interactive TUI or pre-stored credentials | Set up auth before spawning pi, or use TUI interactively |
