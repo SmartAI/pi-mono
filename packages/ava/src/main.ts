@@ -75,54 +75,57 @@ async function main(): Promise<void> {
 	const cwdInContainer = (tid: string) => `${containerDataDir}/threads/${tid}/worktree`;
 	const backends = defaultBackends();
 
-	const dispatcher = new Dispatcher(async (tid) => {
-		try {
-			await runThread(tid, {
-				store,
-				settings,
-				allowedBackends: backends,
-				ensureWorktree: (id) => wm.ensureWorktree(id),
-				sandboxExec,
-				cwdInContainer,
-				containerDataDir,
-				sendAck: async (threadId, originalId, to, subject) => {
-					await gmail.send({
-						threadId,
-						to,
-						subject,
-						bodyText: "On it. I'll reply when done.\n— Ava",
-						inReplyTo: originalId,
-						references: [originalId],
-						attachments: [],
-					});
-				},
-				sendReply: async (reply) => {
-					return gmail.send({
-						threadId: reply.threadId,
-						to: reply.to,
-						subject: reply.subject,
-						bodyText: reply.bodyText,
-						inReplyTo: reply.inReplyToMessageId,
-						references: [reply.inReplyToMessageId],
-						attachments: reply.attachments.map((a) => ({ filename: a.filename, path: a.path })),
-					});
-				},
-				sendStatus: async (threadId, text, to, inReplyTo, subject) => {
-					await gmail.send({
-						threadId,
-						to,
-						subject,
-						bodyText: text,
-						inReplyTo,
-						references: [inReplyTo],
-						attachments: [],
-					});
-				},
-			});
-		} catch (e) {
-			log.error("runThread failed", { threadId: tid, error: String(e) });
-		}
-	});
+	const dispatcher = new Dispatcher(
+		async (tid) => {
+			try {
+				await runThread(tid, {
+					store,
+					settings,
+					allowedBackends: backends,
+					ensureWorktree: (id) => wm.ensureWorktree(id),
+					sandboxExec,
+					cwdInContainer,
+					containerDataDir,
+					sendAck: async (threadId, originalId, to, subject) => {
+						await gmail.send({
+							threadId,
+							to,
+							subject,
+							bodyText: "On it. I'll reply when done.\n— Ava",
+							inReplyTo: originalId,
+							references: [originalId],
+							attachments: [],
+						});
+					},
+					sendReply: async (reply) => {
+						return gmail.send({
+							threadId: reply.threadId,
+							to: reply.to,
+							subject: reply.subject,
+							bodyText: reply.bodyText,
+							inReplyTo: reply.inReplyToMessageId,
+							references: [reply.inReplyToMessageId],
+							attachments: reply.attachments.map((a) => ({ filename: a.filename, path: a.path })),
+						});
+					},
+					sendStatus: async (threadId, text, to, inReplyTo, subject) => {
+						await gmail.send({
+							threadId,
+							to,
+							subject,
+							bodyText: text,
+							inReplyTo,
+							references: [inReplyTo],
+							attachments: [],
+						});
+					},
+				});
+			} catch (e) {
+				log.error("runThread failed", { threadId: tid, error: String(e) });
+			}
+		},
+		{ maxWorkers: settings.dispatcher.maxConcurrency },
+	);
 
 	const shutdown = new AbortController();
 	process.on("SIGINT", () => shutdown.abort());
@@ -160,7 +163,12 @@ async function loadSettings(dataDir: string): Promise<AvaSettings> {
 	const p = join(dataDir, "settings.json");
 	if (!existsSync(p)) return DEFAULT_SETTINGS;
 	const raw = JSON.parse(await readFile(p, "utf-8")) as Partial<AvaSettings>;
-	return { ...DEFAULT_SETTINGS, ...raw, backend: { ...DEFAULT_SETTINGS.backend, ...(raw.backend ?? {}) } };
+	return {
+		...DEFAULT_SETTINGS,
+		...raw,
+		backend: { ...DEFAULT_SETTINGS.backend, ...(raw.backend ?? {}) },
+		dispatcher: { ...DEFAULT_SETTINGS.dispatcher, ...(raw.dispatcher ?? {}) },
+	};
 }
 
 async function loadAllowlist(dataDir: string): Promise<string[]> {

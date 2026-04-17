@@ -40,6 +40,9 @@ export interface AvaSettings {
 	attachments: {
 		perReplyMaxBytes: number; // default 20 * 1024 * 1024
 	};
+	dispatcher: {
+		maxConcurrency: number; // default 2 — cross-thread parallelism cap; same-thread is always sequential
+	};
 	gitFetchIntervalMs: number; // default 10 * 60_000
 }
 
@@ -48,5 +51,6 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	prune: { maxInactiveDays: 14 },
 	timeouts: { perRunMs: 20 * 60_000, gmailPollMs: 30_000 },
 	attachments: { perReplyMaxBytes: 20 * 1024 * 1024 },
+	dispatcher: { maxConcurrency: 2 },
 	gitFetchIntervalMs: 10 * 60_000,
 };
