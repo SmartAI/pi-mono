@@ -41,4 +41,16 @@ describe("outgoing scan", () => {
 		const r = await scanOutgoing(dir, 1_000_000);
 		expect(r.attached).toEqual([]);
 	});
+
+	it("skips reply-body filenames (reply.txt, message.md, etc.) so the reply isn't attached to itself", async () => {
+		await mkdir(join(dir, "outgoing"), { recursive: true });
+		await writeFile(join(dir, "outgoing", "reply.txt"), "the whole email body got dumped here by mistake");
+		await writeFile(join(dir, "outgoing", "message.md"), "same");
+		await writeFile(join(dir, "outgoing", "draft.eml"), "same");
+		await writeFile(join(dir, "outgoing", "response.html"), "<p>same</p>");
+		await writeFile(join(dir, "outgoing", "screenshot.png"), Buffer.alloc(100));
+		const r = await scanOutgoing(dir, 10 * 1024 * 1024);
+		expect(r.attached.map((a) => a.filename)).toEqual(["screenshot.png"]);
+		expect(r.overflow).toEqual([]);
+	});
 });

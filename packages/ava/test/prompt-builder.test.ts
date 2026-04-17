@@ -46,6 +46,20 @@ describe("buildPrompt", () => {
 		expect(later).not.toContain("THREAD_MEM");
 	});
 
+	it("instructs the agent that stdout IS the reply (no reply-file drafting)", () => {
+		const p = buildPrompt({
+			isFirstRun: false,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b" },
+			worktreePath: "/w",
+			outgoingPath: "./outgoing",
+			globalMemory: "",
+			threadMemory: "",
+		});
+		expect(p).toMatch(/stdout.*email body/i);
+		expect(p).toMatch(/do not write a copy of your reply/i);
+		expect(p).toMatch(/only\*?\*? for binary or large artifacts/i);
+	});
+
 	it("strips the @ava:use directive from the body shown to the agent", () => {
 		const p = buildPrompt({
 			isFirstRun: false,
