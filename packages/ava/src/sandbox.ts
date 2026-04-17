@@ -9,11 +9,22 @@ export interface SandboxExecOpts {
 
 export interface SandboxConfig {
 	containerName: string;
+	/** UID to run commands as inside the container. With podman's --userns=keep-id the
+	 * host UID passes through, so 1000 (Max on Fedora) maps to 1000 inside the
+	 * container and the mounted credential files are readable. claude-code's
+	 * "no --dangerously-skip-permissions as root" guard is satisfied because UID 1000
+	 * is non-root in the container too. */
+	execUid?: number;
+	/** HOME dir inside the container for the exec user. Must be where mounted
+	 * credentials live (~/.claude, ~/.codex, ~/.pi). */
+	execHome?: string;
 }
 
 export function makeSandboxExec(cfg: SandboxConfig) {
+	const uid = cfg.execUid ?? 1000;
+	const home = cfg.execHome ?? "/home/ava";
 	return async (argv: string[], opts: SandboxExecOpts): Promise<BackendRunResult> => {
-		const dockerArgv = ["exec", "-i"];
+		const dockerArgv = ["exec", "-i", "-u", String(uid), "-e", `HOME=${home}`];
 		if (opts.workdir) dockerArgv.push("--workdir", opts.workdir);
 		for (const [k, v] of Object.entries(opts.env ?? {})) {
 			dockerArgv.push("-e", `${k}=${v}`);

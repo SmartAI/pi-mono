@@ -20,12 +20,25 @@ mkdir -p "$DATA_DIR"
 if docker ps -a --format '{{.Names}}' | grep -qx "$CONTAINER"; then
   echo "Container $CONTAINER already exists. Delete with: docker rm -f $CONTAINER"
 else
-  # On Fedora, :Z tells Docker to relabel bind mounts for SELinux.
-  # Safe on non-SELinux hosts: they ignore it.
+  # On Fedora, :Z tells Docker/podman to relabel bind mounts for SELinux.
+  # --userns=keep-id is podman-specific: maps host UID 1000 -> container UID 1000
+  # so mounted credential files stay readable by the in-container `ava` user
+  # (also UID 1000). On Docker Engine, remove --userns=keep-id; you'll need
+  # a different credential-sharing strategy. See docs/superpowers/specs for
+  # the Fedora/podman design rationale.
+  # ~/.claude/ is mounted read-write so claude can persist session JSONL files
+  # under projects/<cwd-hash>/ — read-only breaks --resume and session history.
+  # Same effective access level as running `claude` on the host (podman's
+  # --userns=keep-id preserves UID 1000, so writes look identical on-disk).
+  # ~/.claude.json mounted read-write likewise (claude updates counters there).
+  # ~/.codex/ and ~/.pi/ can stay read-only for now; revisit if their CLIs
+  # exhibit similar session-persistence needs.
   docker run -d --name "$CONTAINER" \
+    --userns=keep-id \
     -v "$DATA_DIR:/workspace:Z" \
-    -v "$HOME/.claude:/home/ava/.claude:ro,Z" \
-    -v "$HOME/.codex:/home/ava/.codex:ro,Z" \
+    -v "$HOME/.claude:/home/ava/.claude:Z" \
+    -v "$HOME/.claude.json:/home/ava/.claude.json:Z" \
+    -v "$HOME/.codex:/home/ava/.codex:Z" \
     -v "$HOME/.pi:/home/ava/.pi:ro,Z" \
     alpine:latest tail -f /dev/null
 fi
