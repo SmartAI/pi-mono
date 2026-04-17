@@ -1,0 +1,18 @@
+From: Max <max@actualvoice.ai>
+To: claude@actualvoice.ai
+Subject: with an attachment
+Date: Thu, 16 Apr 2026 12:05:00 +0000
+Message-ID: <m2@mail.example>
+Authentication-Results: mx.google.com; dkim=pass header.d=actualvoice.ai; spf=pass smtp.mailfrom=actualvoice.ai
+Content-Type: multipart/mixed; boundary="b"
+
+--b
+Content-Type: text/plain; charset=utf-8
+
+see attached
+--b
+Content-Type: text/plain; name="note.txt"
+Content-Disposition: attachment; filename="note.txt"
+
+payload-bytes
+--b--
