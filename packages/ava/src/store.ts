@@ -48,6 +48,20 @@ export type LogEntry =
 	  }
 	| { kind: "allowlist-reject"; gmailMessageId: string; from: string; reason: string; at: string }
 	| {
+			// Ava short-circuited with a diagnostic email instead of a real reply —
+			// e.g. agent contract parse failed, backend crashed, auth revoked,
+			// rate-limited with no fallback, triage errored. Persisted so the
+			// stuck-threads skill can tell you WHY a thread has no outbound
+			// without having to grep ephemeral /tmp/ava-live.log.
+			kind: "failure";
+			gmailMessageId: string; // the inbound this was a reply to (Message-Id)
+			category: "parse" | "crash" | "auth" | "rate-limit" | "triage" | "other";
+			reason: string; // short human-readable summary — shown in stuck-threads digest
+			detail?: string; // optional longer debug (truncate to ~500 chars)
+			diagnosticSentAs?: string; // Gmail id of the status email we sent, if any
+			at: string;
+	  }
+	| {
 			kind: "triage";
 			gmailMessageId: string; // the inbound message that was triaged
 			route: "skip" | "coding_agent" | "ack_then_work";
@@ -93,6 +107,11 @@ export class Store {
 	}
 
 	async appendTriage(threadId: string, entry: Extract<LogEntry, { kind: "triage" }>): Promise<void> {
+		await this.ensureThread(threadId);
+		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	}
+
+	async appendFailure(threadId: string, entry: Extract<LogEntry, { kind: "failure" }>): Promise<void> {
 		await this.ensureThread(threadId);
 		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}

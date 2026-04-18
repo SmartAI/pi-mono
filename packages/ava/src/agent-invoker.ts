@@ -122,6 +122,14 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	const parsed = parseAgentContract(result.stdout);
 	if (!parsed.ok) {
 		log.error("agent contract parse failed", { threadId: tid, reason: parsed.reason });
+		await store.appendFailure(tid, {
+			kind: "failure",
+			gmailMessageId: newestInbound.gmailMessageId,
+			category: "parse",
+			reason: `agent contract parse failed: ${parsed.reason}`,
+			detail: parsed.rawStdout.slice(0, 500),
+			at: new Date().toISOString(),
+		});
 		await deps.sendStatus(
 			tid,
 			[
@@ -235,6 +243,13 @@ async function handleFailure(
 	const subject = reSubject(newestInbound.subject);
 	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress, deps.settings.replyDefaults.alwaysCc);
 	if (kind === "auth") {
+		await deps.store.appendFailure(tid, {
+			kind: "failure",
+			gmailMessageId: newestInbound.gmailMessageId,
+			category: "auth",
+			reason: `${primary} auth is broken — credentials need refresh`,
+			at: new Date().toISOString(),
+		});
 		await deps.sendStatus(
 			tid,
 			`My ${primary} auth is broken. Please re-authenticate ${primary} on the host. I'll retry automatically once the credentials are refreshed.`,
@@ -246,6 +261,13 @@ async function handleFailure(
 		return;
 	}
 	if (kind === "rate-limit") {
+		await deps.store.appendFailure(tid, {
+			kind: "failure",
+			gmailMessageId: newestInbound.gmailMessageId,
+			category: "rate-limit",
+			reason: `hit rate limits on all configured backends`,
+			at: new Date().toISOString(),
+		});
 		await deps.sendStatus(
 			tid,
 			`Hit rate limits on all configured backends. I'll resume this thread when quotas reset. Reply again any time to bump the queue.`,
@@ -257,6 +279,14 @@ async function handleFailure(
 		return;
 	}
 	log.error("agent crash", { threadId: tid, exitCode: result.exitCode, stderr: result.stderr.slice(0, 4_000) });
+	await deps.store.appendFailure(tid, {
+		kind: "failure",
+		gmailMessageId: newestInbound.gmailMessageId,
+		category: "crash",
+		reason: `agent subprocess exited with code ${result.exitCode}`,
+		detail: result.stderr.slice(0, 500),
+		at: new Date().toISOString(),
+	});
 	await deps.sendStatus(
 		tid,
 		`The agent subprocess exited with code ${result.exitCode}. Logs have been written to the thread directory. Reply to this email to retry.`,
