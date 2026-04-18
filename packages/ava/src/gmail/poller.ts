@@ -1,5 +1,6 @@
 import { log } from "../log.js";
 import type { Store } from "../store.js";
+import type { TriageDecision, TriageInput } from "../triage.js";
 import { decideAllowlist } from "./allowlist.js";
 import type { GmailClient } from "./client.js";
 import { parseRaw } from "./parse.js";
@@ -12,6 +13,11 @@ export interface PollerOptions {
 	query: string;
 	onAccepted: (threadId: string) => void;
 	onStopSignal: AbortSignal;
+	// Optional triage hook — if provided, runs before enqueueing and can
+	// skip messages that don't warrant a full coding-agent run. When
+	// undefined, every allowlisted inbound goes straight to onAccepted
+	// (the pre-triage behavior, useful for tests).
+	triage?: (input: TriageInput) => Promise<TriageDecision>;
 }
 
 export async function runPoller(opts: PollerOptions): Promise<void> {
@@ -72,6 +78,45 @@ async function tick(opts: PollerOptions): Promise<void> {
 			attachments: parsed.attachments,
 		});
 		await opts.client.markRead(id);
+
+		// Triage decides whether this message warrants a full coding-agent
+		// run. On skip we log and stay silent; on coding_agent (or when
+		// triage is disabled / errors) we fall through to the dispatcher.
+		if (opts.triage) {
+			try {
+				const decision = await opts.triage({
+					threadId,
+					from: parsed.from,
+					subject: parsed.subject,
+					bodyText: parsed.bodyText,
+					attachments: parsed.attachments.map((a) => ({ filename: a.filename, bytes: a.bytes })),
+				});
+				await opts.store.appendTriage(threadId, {
+					kind: "triage",
+					gmailMessageId: parsed.gmailMessageId,
+					route: decision.route,
+					reason: decision.reason,
+					confidence: decision.confidence,
+					at: new Date().toISOString(),
+				});
+				if (decision.route === "skip") {
+					log.info("triage skipped inbound", {
+						threadId,
+						from: parsed.from,
+						reason: decision.reason,
+						confidence: decision.confidence,
+					});
+					continue;
+				}
+				log.info("triage routed to coding_agent", {
+					threadId,
+					confidence: decision.confidence,
+				});
+			} catch (e) {
+				// Never let triage block real work — log and enqueue.
+				log.error("triage threw; enqueuing anyway", { threadId, error: String(e) });
+			}
+		}
 		opts.onAccepted(threadId);
 	}
 }

@@ -13,6 +13,7 @@ import { log } from "./log.js";
 import { makeSandboxExec } from "./sandbox.js";
 import { runScheduler } from "./scheduler.js";
 import { Store } from "./store.js";
+import { runTriage } from "./triage.js";
 import { type AvaSettings, DEFAULT_SETTINGS } from "./types.js";
 import { WorktreeManager } from "./worktree.js";
 
@@ -161,6 +162,15 @@ async function main(): Promise<void> {
 			query: "is:unread newer_than:7d -in:sent",
 			onAccepted: (tid) => dispatcher.enqueue(tid),
 			onStopSignal: shutdown.signal,
+			triage: settings.triage.enabled
+				? (input) =>
+						runTriage(input, {
+							dataDir,
+							containerDataDir,
+							sandboxExec,
+							timeoutMs: settings.triage.timeoutMs,
+						})
+				: undefined,
 		});
 	} finally {
 		clearInterval(pruneTimer);
@@ -180,6 +190,7 @@ async function loadSettings(dataDir: string): Promise<AvaSettings> {
 		dispatcher: { ...DEFAULT_SETTINGS.dispatcher, ...(raw.dispatcher ?? {}) },
 		replyDefaults: { ...DEFAULT_SETTINGS.replyDefaults, ...(raw.replyDefaults ?? {}) },
 		schedules: { ...DEFAULT_SETTINGS.schedules, ...(raw.schedules ?? {}) },
+		triage: { ...DEFAULT_SETTINGS.triage, ...(raw.triage ?? {}) },
 	};
 }
 

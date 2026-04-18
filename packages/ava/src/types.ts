@@ -54,6 +54,10 @@ export interface AvaSettings {
 		enabled: boolean; // default true — flip false to pause all cron jobs without removing the config
 		tickMs: number; // default 30_000 — how often the scheduler checks cron matches
 	};
+	triage: {
+		enabled: boolean; // default true — flip false to disable the triage step (every allowlisted email goes to the coding agent)
+		timeoutMs: number; // default 60_000 — triage should be fast; extend if your model is slow
+	};
 	gitFetchIntervalMs: number; // default 10 * 60_000
 }
 
@@ -75,5 +79,6 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	dispatcher: { maxConcurrency: 2 },
 	replyDefaults: { alwaysCc: [] },
 	schedules: { enabled: true, tickMs: 30_000 },
+	triage: { enabled: true, timeoutMs: 60_000 },
 	gitFetchIntervalMs: 10 * 60_000,
 };

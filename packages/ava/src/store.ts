@@ -46,7 +46,15 @@ export type LogEntry =
 			exitCode?: number; // present when outcome=failed
 			failureKind?: string; // present when outcome=failed
 	  }
-	| { kind: "allowlist-reject"; gmailMessageId: string; from: string; reason: string; at: string };
+	| { kind: "allowlist-reject"; gmailMessageId: string; from: string; reason: string; at: string }
+	| {
+			kind: "triage";
+			gmailMessageId: string; // the inbound message that was triaged
+			route: "skip" | "coding_agent";
+			reason: string;
+			confidence: "low" | "high";
+			at: string;
+	  };
 
 export class Store {
 	constructor(public readonly dataDir: string) {}
@@ -79,6 +87,11 @@ export class Store {
 	}
 
 	async appendScheduledFire(threadId: string, entry: Extract<LogEntry, { kind: "scheduled-fire" }>): Promise<void> {
+		await this.ensureThread(threadId);
+		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	}
+
+	async appendTriage(threadId: string, entry: Extract<LogEntry, { kind: "triage" }>): Promise<void> {
 		await this.ensureThread(threadId);
 		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
