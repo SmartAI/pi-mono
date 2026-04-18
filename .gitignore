@@ -13,6 +13,9 @@ packages/*/dist-firefox/
 # Environment
 .env
 
+# Ava runtime state (credentials, thread logs, bare-mirror, secrets)
+/data/
+
 # Editor files
 .vscode/
 .zed/

@@ -190,6 +190,26 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 
 	const bodyText = result.stdout.trim();
 	const { attached, overflow } = await scanOutgoing(threadDir, deps.settings.attachments.perReplyMaxBytes);
+
+	// Silent-run contract: an empty body + no attachments means the agent
+	// intentionally had nothing to report (e.g. the health-check skill stays
+	// quiet when production didn't transition). Skip the send so the
+	// scheduled inbox only lights up on signal.
+	if (!bodyText && attached.length === 0) {
+		await deps.store.appendScheduledFire(threadId, {
+			kind: "scheduled-fire",
+			name: entry.name,
+			cron: entry.cron,
+			at: now.toISOString(),
+			backend: backendName,
+			subject,
+			outcome: "sent",
+			gmailMessageId: "", // intentionally empty: nothing was sent
+		});
+		log.info("scheduled job ran silently (empty body, nothing to send)", { name: entry.name });
+		return;
+	}
+
 	const capMB = Math.floor(deps.settings.attachments.perReplyMaxBytes / (1024 * 1024));
 	const finalBody = overflow.length
 		? `${bodyText}\n\n---\n(Some files exceeded the ${capMB}MB attachment cap and were not attached: ${overflow.map((f) => f.filename).join(", ")}.)`
