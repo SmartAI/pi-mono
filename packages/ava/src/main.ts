@@ -17,6 +17,7 @@ import { runScheduler } from "./scheduler.js";
 import { Store } from "./store.js";
 import { runTriage } from "./triage.js";
 import { type AvaSettings, DEFAULT_SETTINGS } from "./types.js";
+import { runWebUi } from "./web-ui.js";
 import { WorktreeManager } from "./worktree.js";
 
 async function main(): Promise<void> {
@@ -175,6 +176,20 @@ async function main(): Promise<void> {
 		signal: shutdown.signal,
 	}).catch((e) => log.error("auto-retry loop crashed", { error: String(e) }));
 
+	// Local thread-management dashboard. Read-mostly Kanban view reading
+	// data/threads/*/log.jsonl directly; the only write path is POST
+	// /api/threads/<tid>/retry which drops a marker the retry-queue picks
+	// up (same mechanism as the thread-ops skill). Binds to 127.0.0.1 by
+	// default — do NOT expose remotely without adding auth.
+	const webUiPromise = settings.webUi.enabled
+		? runWebUi({
+				dataDir,
+				host: settings.webUi.host,
+				port: settings.webUi.port,
+				signal: shutdown.signal,
+			}).catch((e) => log.error("web-ui loop crashed", { error: String(e) }))
+		: Promise.resolve();
+
 	try {
 		await runPoller({
 			client: gmail,
@@ -212,6 +227,7 @@ async function main(): Promise<void> {
 		await schedulerPromise;
 		await retryQueuePromise;
 		await autoRetryPromise;
+		await webUiPromise;
 		await dispatcher.drain();
 	}
 }
@@ -228,6 +244,7 @@ async function loadSettings(dataDir: string): Promise<AvaSettings> {
 		replyDefaults: { ...DEFAULT_SETTINGS.replyDefaults, ...(raw.replyDefaults ?? {}) },
 		schedules: { ...DEFAULT_SETTINGS.schedules, ...(raw.schedules ?? {}) },
 		triage: { ...DEFAULT_SETTINGS.triage, ...(raw.triage ?? {}) },
+		webUi: { ...DEFAULT_SETTINGS.webUi, ...(raw.webUi ?? {}) },
 	};
 }
 

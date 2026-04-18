@@ -62,6 +62,11 @@ export interface AvaSettings {
 		enabled: boolean; // default true — flip false to disable the triage step (every allowlisted email goes to the coding agent)
 		timeoutMs: number; // default 60_000 — triage should be fast; extend if your model is slow
 	};
+	webUi: {
+		enabled: boolean; // default true — local dashboard at http://127.0.0.1:<port>
+		host: string; // default "127.0.0.1" — bind address; DO NOT change without auth
+		port: number; // default 3333
+	};
 	gitFetchIntervalMs: number; // default 10 * 60_000
 }
 
@@ -84,5 +89,6 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	replyDefaults: { alwaysCc: [], includeCostFooter: true },
 	schedules: { enabled: true, tickMs: 30_000 },
 	triage: { enabled: true, timeoutMs: 60_000 },
+	webUi: { enabled: true, host: "127.0.0.1", port: 3333 },
 	gitFetchIntervalMs: 10 * 60_000,
 };
