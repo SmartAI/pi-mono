@@ -14,10 +14,24 @@ export interface PollerOptions {
 	onAccepted: (threadId: string) => void;
 	onStopSignal: AbortSignal;
 	// Optional triage hook — if provided, runs before enqueueing and can
-	// skip messages that don't warrant a full coding-agent run. When
-	// undefined, every allowlisted inbound goes straight to onAccepted
-	// (the pre-triage behavior, useful for tests).
+	// skip messages, ack-then-enqueue, or enqueue directly. When undefined,
+	// every allowlisted inbound goes straight to onAccepted (the pre-triage
+	// behavior, useful for tests).
 	triage?: (input: TriageInput) => Promise<TriageDecision>;
+	// Callback invoked only for route === "ack_then_work". Fires before
+	// onAccepted so the user sees the ack first. Wired in main.ts to
+	// reuse buildReplyRecipients + gmail.send with proper reply-all + CC.
+	sendAckThenWork?: (args: {
+		threadId: string;
+		ackBody: string;
+		inbound: {
+			gmailMessageId: string;
+			from: string;
+			to: string[];
+			cc: string[];
+			subject: string;
+		};
+	}) => Promise<void>;
 }
 
 export async function runPoller(opts: PollerOptions): Promise<void> {
@@ -108,10 +122,31 @@ async function tick(opts: PollerOptions): Promise<void> {
 					});
 					continue;
 				}
-				log.info("triage routed to coding_agent", {
-					threadId,
-					confidence: decision.confidence,
-				});
+				if (decision.route === "ack_then_work" && decision.ackBody && opts.sendAckThenWork) {
+					try {
+						await opts.sendAckThenWork({
+							threadId,
+							ackBody: decision.ackBody,
+							inbound: {
+								gmailMessageId: parsed.gmailMessageId,
+								from: parsed.from,
+								to: parsed.to,
+								cc: parsed.cc,
+								subject: parsed.subject,
+							},
+						});
+						log.info("triage ack sent; enqueuing coding agent", { threadId, confidence: decision.confidence });
+					} catch (e) {
+						// Ack failed — log loudly but still enqueue. A missing ack
+						// is better than a dropped message.
+						log.error("triage ack send failed; enqueuing anyway", { threadId, error: String(e) });
+					}
+				} else {
+					log.info("triage routed to coding_agent", {
+						threadId,
+						confidence: decision.confidence,
+					});
+				}
 			} catch (e) {
 				// Never let triage block real work — log and enqueue.
 				log.error("triage threw; enqueuing anyway", { threadId, error: String(e) });

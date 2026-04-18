@@ -13,8 +13,14 @@ packages/*/dist-firefox/
 # Environment
 .env
 
-# Ava runtime state (credentials, thread logs, bare-mirror, secrets)
-/data/
+# Ava runtime state (credentials, thread logs, bare-mirror, secrets).
+# Skill directories under data/ that define Ava's non-project capabilities
+# (e.g. triage) ARE tracked — they're procedural config, not runtime state.
+# We ignore /data/** then re-include specific subtrees; git requires the
+# parent dir itself NOT be ignored, so we use /data/** not /data/.
+/data/**
+!/data/triage-cwd/
+!/data/triage-cwd/**
 
 # Editor files
 .vscode/

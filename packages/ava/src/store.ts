@@ -50,9 +50,10 @@ export type LogEntry =
 	| {
 			kind: "triage";
 			gmailMessageId: string; // the inbound message that was triaged
-			route: "skip" | "coding_agent";
+			route: "skip" | "coding_agent" | "ack_then_work";
 			reason: string;
 			confidence: "low" | "high";
+			ackSent?: boolean; // true when route=ack_then_work and the ack was successfully delivered
 			at: string;
 	  };
 

@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { defaultBackends, runThread } from "./agent-invoker.js";
+import { buildReplyRecipients, defaultBackends, runThread } from "./agent-invoker.js";
 import { shouldEmitPiTosWarning } from "./backends/select.js";
 import { Dispatcher } from "./dispatcher.js";
 import { GmailClient } from "./gmail/client.js";
@@ -171,6 +171,19 @@ async function main(): Promise<void> {
 							timeoutMs: settings.triage.timeoutMs,
 						})
 				: undefined,
+			sendAckThenWork: async ({ threadId, ackBody, inbound }) => {
+				const recipients = buildReplyRecipients(inbound, selfAddress, settings.replyDefaults.alwaysCc);
+				await gmail.send({
+					threadId, // Gmail's thread id — ensures the ack threads into the existing conversation
+					to: recipients.to,
+					cc: recipients.cc,
+					subject: /^re:/i.test(inbound.subject) ? inbound.subject : `Re: ${inbound.subject}`,
+					bodyText: ackBody,
+					inReplyTo: inbound.gmailMessageId,
+					references: [inbound.gmailMessageId],
+					attachments: [],
+				});
+			},
 		});
 	} finally {
 		clearInterval(pruneTimer);

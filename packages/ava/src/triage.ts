@@ -16,12 +16,15 @@ import { log } from "./log.js";
  * parses the JSON decision.
  */
 
-export type TriageRoute = "skip" | "coding_agent";
+export type TriageRoute = "skip" | "coding_agent" | "ack_then_work";
 
 export interface TriageDecision {
 	route: TriageRoute;
 	reason: string;
 	confidence: "low" | "high";
+	// Present only when route === "ack_then_work". A 1-2 sentence human-
+	// readable ack sent immediately before the coding agent is queued.
+	ackBody?: string;
 }
 
 export interface TriageInput {
@@ -68,9 +71,10 @@ export async function runTriage(input: TriageInput, deps: TriageDeps): Promise<T
 		`You are Ava's email triage step. One round, one decision — classify the email below and emit a single JSON object as your entire stdout. The \`email-triage\` skill in this cwd owns the full procedure; follow it.`,
 		``,
 		`Hard rules recap:`,
-		`- Output is exactly ONE JSON object: {"route": "skip" | "coding_agent", "reason": "<one sentence>", "confidence": "low" | "high"}.`,
+		`- Output is exactly ONE JSON object with keys: route ("skip" | "coding_agent" | "ack_then_work"), reason (one sentence), confidence ("low" | "high"), and ack_body (REQUIRED only when route=ack_then_work; otherwise omit).`,
 		`- No preamble, no code fence, no postamble. Just the JSON.`,
 		`- When in doubt, route to "coding_agent" with low confidence. Silent skips are worse than redundant runs.`,
+		`- Use "ack_then_work" for multi-minute work (spec implementations, big PRs) so the sender gets immediate acknowledgment. The ack_body must NOT promise an ETA or claim work is in progress — just confirm receipt and intent.`,
 		`- Do NOT reply to the email, write code, or do anything beyond classifying.`,
 	].join("\n");
 
@@ -136,11 +140,16 @@ export function parseTriageDecision(stdout: string): TriageDecision | null {
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 	const obj = parsed as Record<string, unknown>;
 	const route = obj.route;
-	if (route !== "skip" && route !== "coding_agent") return null;
+	if (route !== "skip" && route !== "coding_agent" && route !== "ack_then_work") return null;
 	const confidence = obj.confidence;
 	if (confidence !== "low" && confidence !== "high") return null;
 	const reason = typeof obj.reason === "string" ? obj.reason.trim() : "";
 	if (!reason) return null;
+	if (route === "ack_then_work") {
+		const ackBody = typeof obj.ack_body === "string" ? obj.ack_body.trim() : "";
+		if (!ackBody) return null; // ack_then_work REQUIRES a non-empty ack_body
+		return { route, reason, confidence, ackBody };
+	}
 	return { route, reason, confidence };
 }
 
