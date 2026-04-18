@@ -59,8 +59,10 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		directive,
 	});
 
-	// Inject memory every turn (not just first-run) so updates to either
-	// file land in the next invocation without waiting for a fresh thread.
+	// Inject persona + memory every turn (not just first-run) so edits to
+	// any of these files land in the next invocation without waiting for
+	// a fresh thread. Persona defines WHO Ava is; memory is what she knows.
+	const persona = await readIf(join(store.dataDir, "SOUL.md"));
 	const globalMemory = await readIf(join(store.dataDir, "MEMORY.md"));
 	const threadMemory = await readIf(join(store.threadPathAbs(tid), "MEMORY.md"));
 
@@ -88,6 +90,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		},
 		worktreePath: deps.cwdInContainer(tid),
 		outgoingPath: "./outgoing",
+		persona,
 		globalMemory,
 		threadMemory,
 		skills,

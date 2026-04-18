@@ -120,6 +120,7 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 
 	const worktreeHost = deps.store.threadPathAbs(threadId, "worktree");
 	const skills = await discoverSkills(worktreeHost);
+	const persona = await readIfExists(join(deps.store.dataDir, "SOUL.md"));
 	const globalMemory = await readIfExists(join(deps.store.dataDir, "MEMORY.md"));
 	const { systemPrompt, userPrompt } = buildScheduledPrompt({
 		entry,
@@ -127,6 +128,7 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 		worktreePath: deps.cwdInContainer(threadId),
 		outgoingPath: "./outgoing",
 		skills,
+		persona,
 		globalMemory,
 	});
 
@@ -260,6 +262,7 @@ function buildScheduledPrompt(input: {
 	worktreePath: string;
 	outgoingPath: string;
 	skills: SkillMeta[];
+	persona: string;
 	globalMemory: string;
 }): { systemPrompt: string; userPrompt: string } {
 	// Scheduled flows use plain-text output (not the JSON contract) because
@@ -275,6 +278,8 @@ function buildScheduledPrompt(input: {
 			`Recipients: ${input.entry.to.join(", ")}.`,
 		].join("\n"),
 	);
+	const persona = input.persona.trim();
+	if (persona) sys.push(`## Who you are (voice, tone, identity)\n${persona}`);
 	sys.push(
 		[
 			`## System facts`,

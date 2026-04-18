@@ -4,6 +4,7 @@ import { buildPrompt } from "../src/prompt-builder.js";
 const BASE = {
 	worktreePath: "/workspace/threads/T-1/worktree",
 	outgoingPath: "./outgoing",
+	persona: "",
 	globalMemory: "",
 	threadMemory: "",
 	skills: [],
@@ -98,6 +99,24 @@ describe("buildPrompt", () => {
 		expect(userPrompt).toContain("/workspace/threads/T-1/attachments/m1/spec.md");
 		// Attachments go in user prompt, not system
 		expect(systemPrompt).not.toContain("/workspace/threads/T-1/attachments");
+	});
+
+	it("injects persona into the system prompt when SOUL.md is non-empty", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
+			persona: "You are terse. You never apologize. You prefer facts to hedges.",
+		});
+		expect(systemPrompt).toContain("Who you are (voice, tone, identity)");
+		expect(systemPrompt).toContain("You are terse.");
+	});
+
+	it("omits the persona section when SOUL.md is empty", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
+		});
+		expect(systemPrompt).not.toContain("Who you are");
 	});
 
 	it("strips the @ava:use directive from the body shown to the agent", () => {

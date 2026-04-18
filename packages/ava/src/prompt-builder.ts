@@ -24,8 +24,9 @@ export interface BuildPromptInput {
 	};
 	worktreePath: string; // container path to the voicepulse worktree (e.g. /workspace/threads/<tid>/worktree)
 	outgoingPath: string; // relative — e.g. "./outgoing"
-	globalMemory: string; // contents of data/MEMORY.md (raw text)
-	threadMemory: string; // contents of data/threads/<tid>/MEMORY.md (raw text)
+	persona: string; // contents of data/SOUL.md (voice, tone, identity) — injected every turn
+	globalMemory: string; // contents of data/MEMORY.md (operational facts) — injected every turn
+	threadMemory: string; // contents of data/threads/<tid>/MEMORY.md (per-thread notes)
 	skills: SkillMeta[]; // discovered from <worktree>/.claude/skills/*/SKILL.md
 }
 
@@ -62,6 +63,9 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 			`Working directory: ${input.worktreePath}.`,
 		].join("\n"),
 	);
+
+	const persona = input.persona.trim();
+	if (persona) sections.push(`## Who you are (voice, tone, identity)\n${persona}`);
 
 	sections.push(
 		[
