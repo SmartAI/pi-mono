@@ -66,10 +66,11 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	const globalMemory = await readIf(join(store.dataDir, "MEMORY.md"));
 	const threadMemory = await readIf(join(store.threadPathAbs(tid), "MEMORY.md"));
 
-	// Enumerate skills from the worktree's .claude/skills/ so the agent
-	// knows by name+description what's available, not just that a dir exists.
-	const worktreeHostPath = store.threadPathAbs(tid, "worktree");
-	const skills = await discoverSkills(worktreeHostPath);
+	// Enumerate Ava-level skills from data/skills/. Project skills
+	// (voicepulse/.claude/skills/) are auto-loaded by Claude Code in the
+	// worktree; re-listing them here would duplicate and potentially
+	// contradict Claude Code's own skill index.
+	const skills = await discoverSkills(join(store.dataDir, "skills"));
 
 	// Translate attachment paths from host-absolute to container-absolute
 	// so the listing we hand to the agent actually resolves in its shell.

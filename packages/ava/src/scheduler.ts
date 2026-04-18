@@ -118,8 +118,9 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 	await clearOutgoing(threadDir);
 	await resetBackendSessions(threadDir);
 
-	const worktreeHost = deps.store.threadPathAbs(threadId, "worktree");
-	const skills = await discoverSkills(worktreeHost);
+	// Ava-level skills live at data/skills/. Project skills in the worktree
+	// are handled by Claude Code's auto-discovery — don't re-enumerate.
+	const skills = await discoverSkills(join(deps.dataDir, "skills"));
 	const persona = await readIfExists(join(deps.store.dataDir, "SOUL.md"));
 	const globalMemory = await readIfExists(join(deps.store.dataDir, "MEMORY.md"));
 	const { systemPrompt, userPrompt } = buildScheduledPrompt({

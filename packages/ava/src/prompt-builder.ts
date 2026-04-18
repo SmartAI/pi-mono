@@ -27,7 +27,12 @@ export interface BuildPromptInput {
 	persona: string; // contents of data/SOUL.md (voice, tone, identity) — injected every turn
 	globalMemory: string; // contents of data/MEMORY.md (operational facts) — injected every turn
 	threadMemory: string; // contents of data/threads/<tid>/MEMORY.md (per-thread notes)
-	skills: SkillMeta[]; // discovered from <worktree>/.claude/skills/*/SKILL.md
+	// Ava-level skills discovered from data/skills/*/SKILL.md. These are
+	// NOT the project's .claude/skills/ — Claude Code auto-loads those on
+	// its own when running in the worktree. Enumerating them here would
+	// duplicate Claude Code's internal skill list. This field is for skills
+	// that apply across projects (e.g. sandbox ops, mail triage).
+	skills: SkillMeta[];
 }
 
 export interface BuiltPrompt {
@@ -71,14 +76,17 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 		[
 			`## System facts`,
 			`- You have no background workers and no runtime between turns. This turn ends the moment you stop emitting stdout. Nothing runs after you exit — anything you claim in \`email_body\` or \`actions\` must be produced by tool calls in this turn.`,
-			`- Skills are auto-discovered from \`.claude/skills/\` — see the enumerated list below. Use them when relevant; do not reimplement their logic.`,
+			`- Project skills live at \`<worktree>/.claude/skills/\` and are loaded automatically by your runtime — you don't need a list here. Check the /skill-name commands your runtime exposes.`,
 			`- \`${input.outgoingPath}/\` is for binary attachments only (screenshots, diffs, PDFs, generated reports). Do NOT write your reply text to a file anywhere — the reply lives inside the JSON \`email_body\` field of your response.`,
 			`- Sender attachments (if any) are listed in the user message with absolute paths inside this sandbox — just \`cat\` / \`read\` them directly.`,
 		].join("\n"),
 	);
 
 	if (input.skills.length > 0) {
-		const lines = [`## Skills (${input.skills.length} available — discovered from .claude/skills/)`];
+		const lines = [
+			`## Ava-level skills (${input.skills.length} available — discovered from data/skills/)`,
+			`These apply across projects and sit outside \`.claude/skills/\`. Use them when the task matches.`,
+		];
 		for (const s of input.skills) {
 			lines.push(`- **${s.name}**: ${s.description}`);
 		}
@@ -148,15 +156,20 @@ function formatBytes(n: number): string {
 }
 
 /**
- * Enumerate skills under `<worktreeAbsPath>/.claude/skills/`.
- * Each skill directory must contain a SKILL.md with YAML-ish frontmatter
+ * Enumerate SKILL.md files in the given directory. Each sub-directory of
+ * `skillsDir` is expected to contain a SKILL.md with YAML-ish frontmatter
  * (`--- ... ---`) exposing at least `name` and `description`.
  *
- * Returns an empty list if the skills dir doesn't exist or contains no
- * parseable skill files. Never throws — silent-fails individual skills.
+ * Callers pass the exact directory to scan. For Ava's runtime, that's
+ * `data/skills/` — NOT the project's `.claude/skills/`. Project skills
+ * are auto-loaded by Claude Code when it runs inside the worktree; listing
+ * them here would duplicate (and potentially contradict) Claude Code's
+ * own skill index.
+ *
+ * Returns an empty list if the dir doesn't exist or contains no parseable
+ * skill files. Never throws — silent-fails individual skills.
  */
-export async function discoverSkills(worktreeAbsPath: string): Promise<SkillMeta[]> {
-	const skillsDir = join(worktreeAbsPath, ".claude/skills");
+export async function discoverSkills(skillsDir: string): Promise<SkillMeta[]> {
 	if (!existsSync(skillsDir)) return [];
 	let entries: Dirent[];
 	try {
