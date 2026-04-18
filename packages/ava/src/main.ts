@@ -10,6 +10,7 @@ import { GmailClient } from "./gmail/client.js";
 import { gmailAuthSetup } from "./gmail/oauth-setup.js";
 import { runPoller } from "./gmail/poller.js";
 import { log } from "./log.js";
+import { runRetryQueue } from "./retry-queue.js";
 import { makeSandboxExec } from "./sandbox.js";
 import { runScheduler } from "./scheduler.js";
 import { Store } from "./store.js";
@@ -153,6 +154,17 @@ async function main(): Promise<void> {
 		signal: shutdown.signal,
 	}).catch((e) => log.error("scheduler loop crashed", { error: String(e) }));
 
+	// Retry-queue watcher — picks up marker files the meta-command agent
+	// drops at data/retry-queue/<tid>.json and re-enqueues those threads
+	// with a synthetic retry inbound. Shares the dispatcher with the poller
+	// so per-thread serialization still applies.
+	const retryQueuePromise = runRetryQueue({
+		dataDir,
+		store,
+		enqueue: (tid) => dispatcher.enqueue(tid),
+		signal: shutdown.signal,
+	}).catch((e) => log.error("retry-queue loop crashed", { error: String(e) }));
+
 	try {
 		await runPoller({
 			client: gmail,
@@ -188,6 +200,7 @@ async function main(): Promise<void> {
 	} finally {
 		clearInterval(pruneTimer);
 		await schedulerPromise;
+		await retryQueuePromise;
 		await dispatcher.drain();
 	}
 }
