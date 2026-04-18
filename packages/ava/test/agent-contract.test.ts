@@ -46,6 +46,47 @@ describe("parseAgentContract", () => {
 		expect(r.contract.attachments).toEqual([{ path: "/workspace/foo.md", filename: "foo.md" }]);
 	});
 
+	it("prefers a ```json fenced block even when prose precedes it", () => {
+		// This is the exact shape that broke the admin-dashboard thread on
+		// 2026-04-18: agent emitted prose with inline `{date}` before the
+		// real JSON contract wrapped in a code fence. Old parser grabbed
+		// the stray `{date}` as JSON and failed. The fence wins now.
+		const stdout = [
+			"Max, Brian —",
+			"",
+			"Applied edits. See `Closed {date}` reference in §4.6 row state matrix.",
+			"",
+			"Ava",
+			"",
+			"```json",
+			JSON.stringify({
+				status: "done",
+				email_body: "Max, Brian — applied edits, see §4.6.",
+				actions: [{ kind: "file_write", path: "/workspace/spec.md" }],
+			}),
+			"```",
+		].join("\n");
+		const r = parseAgentContract(stdout);
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.contract.status).toBe("done");
+			expect(r.contract.email_body).toBe("Max, Brian — applied edits, see §4.6.");
+			expect(r.contract.actions).toHaveLength(1);
+		}
+	});
+
+	it("skips stray {word} in prose and finds the real balanced object later", () => {
+		// Even without a code fence, when the agent inlines `{placeholder}`
+		// in its prose we should fall through to the next balanced {...}
+		// that actually parses.
+		const stdout =
+			"Max — the display format is `Closed {date}`. Contract:\n" +
+			JSON.stringify({ status: "blocked", email_body: "need input", actions: [] });
+		const r = parseAgentContract(stdout);
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(r.contract.status).toBe("blocked");
+	});
+
 	it("rejects attachment without a path", () => {
 		const r = parseAgentContract(
 			JSON.stringify({

@@ -47,52 +47,71 @@ export type ContractParseResult = ContractParseOk | ContractParseFail;
 /**
  * Parse the agent's stdout as the required JSON contract.
  *
- * Be liberal in what we accept at the edges: the agent may prepend a log
- * line or wrap the JSON in a ```json fence. We extract the first top-level
- * JSON object we can find and validate its shape. If parsing fails we
- * return a structured error so Ava can emit a diagnostic reply instead of
- * blindly forwarding garbage.
+ * Be liberal in what we accept at the edges: the agent may add a prose
+ * preamble, wrap the JSON in a ```json fence, or inline `{word}`-style
+ * literals that aren't JSON at all. We try candidate JSON regions in
+ * order of likelihood — code-fenced first, then every balanced
+ * `{...}` in the text — and pick the first that parses AND has the
+ * required contract fields. If nothing qualifies we return a structured
+ * error so Ava can emit a diagnostic reply instead of forwarding garbage.
  */
 export function parseAgentContract(stdout: string): ContractParseResult {
-	const candidate = extractJsonObject(stdout);
-	if (!candidate) {
+	const candidates = extractJsonCandidates(stdout);
+	if (candidates.length === 0) {
 		return { ok: false, reason: "no JSON object found in stdout", rawStdout: stdout };
 	}
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(candidate);
-	} catch (e) {
-		return { ok: false, reason: `JSON.parse failed: ${String(e)}`, rawStdout: stdout };
+	let lastReason = "no parseable contract object found in stdout";
+	for (const candidate of candidates) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(candidate);
+		} catch (e) {
+			lastReason = `JSON.parse failed: ${String(e)}`;
+			continue;
+		}
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			lastReason = "top-level value is not an object";
+			continue;
+		}
+		const obj = parsed as Record<string, unknown>;
+		const result = validateContractObject(obj);
+		if (!result.ok) {
+			lastReason = result.reason;
+			continue;
+		}
+		return { ok: true, contract: result.contract };
 	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return { ok: false, reason: "top-level value is not an object", rawStdout: stdout };
-	}
-	const obj = parsed as Record<string, unknown>;
+	return { ok: false, reason: lastReason, rawStdout: stdout };
+}
+
+function validateContractObject(
+	obj: Record<string, unknown>,
+): { ok: true; contract: AgentContract } | { ok: false; reason: string } {
 	const status = obj.status;
 	if (status !== "done" && status !== "partial" && status !== "blocked") {
-		return { ok: false, reason: `invalid status: ${JSON.stringify(status)}`, rawStdout: stdout };
+		return { ok: false, reason: `invalid status: ${JSON.stringify(status)}` };
 	}
 	if (typeof obj.email_body !== "string" || !obj.email_body.trim()) {
-		return { ok: false, reason: "email_body missing or empty", rawStdout: stdout };
+		return { ok: false, reason: "email_body missing or empty" };
 	}
 	if (!Array.isArray(obj.actions)) {
-		return { ok: false, reason: "actions is not an array", rawStdout: stdout };
+		return { ok: false, reason: "actions is not an array" };
 	}
 	const actions: AgentAction[] = [];
 	for (const [i, a] of (obj.actions as unknown[]).entries()) {
 		if (!a || typeof a !== "object" || Array.isArray(a)) {
-			return { ok: false, reason: `actions[${i}] is not an object`, rawStdout: stdout };
+			return { ok: false, reason: `actions[${i}] is not an object` };
 		}
 		const ao = a as Record<string, unknown>;
 		if (typeof ao.kind !== "string" || !ao.kind) {
-			return { ok: false, reason: `actions[${i}].kind missing`, rawStdout: stdout };
+			return { ok: false, reason: `actions[${i}].kind missing` };
 		}
 		actions.push(ao as AgentAction);
 	}
 	let unfinished: AgentContract["unfinished"];
 	if (obj.unfinished !== undefined) {
 		if (!Array.isArray(obj.unfinished)) {
-			return { ok: false, reason: "unfinished is not an array", rawStdout: stdout };
+			return { ok: false, reason: "unfinished is not an array" };
 		}
 		unfinished = (obj.unfinished as unknown[]).map((u, i) => {
 			if (!u || typeof u !== "object") throw new Error(`unfinished[${i}] invalid`);
@@ -106,16 +125,16 @@ export function parseAgentContract(stdout: string): ContractParseResult {
 	let attachments: AgentAttachment[] | undefined;
 	if (obj.attachments !== undefined) {
 		if (!Array.isArray(obj.attachments)) {
-			return { ok: false, reason: "attachments is not an array", rawStdout: stdout };
+			return { ok: false, reason: "attachments is not an array" };
 		}
 		attachments = [];
 		for (const [i, a] of (obj.attachments as unknown[]).entries()) {
 			if (!a || typeof a !== "object" || Array.isArray(a)) {
-				return { ok: false, reason: `attachments[${i}] is not an object`, rawStdout: stdout };
+				return { ok: false, reason: `attachments[${i}] is not an object` };
 			}
 			const ao = a as Record<string, unknown>;
 			if (typeof ao.path !== "string" || !ao.path) {
-				return { ok: false, reason: `attachments[${i}].path missing`, rawStdout: stdout };
+				return { ok: false, reason: `attachments[${i}].path missing` };
 			}
 			attachments.push({
 				path: ao.path,
@@ -127,7 +146,7 @@ export function parseAgentContract(stdout: string): ContractParseResult {
 		ok: true,
 		contract: {
 			status,
-			email_body: obj.email_body,
+			email_body: obj.email_body as string,
 			summary: typeof obj.summary === "string" ? obj.summary : undefined,
 			actions,
 			unfinished,
@@ -228,14 +247,57 @@ export function buildEmailBody(contract: AgentContract): string {
 }
 
 /**
- * Pull the first balanced top-level JSON object out of a stdout blob.
- * Handles ```json fences and leading/trailing prose (which we don't want
- * but may get if the agent ignores the "exactly ONE JSON object" rule).
+ * Produce every JSON candidate string we could plausibly parse from the
+ * stdout blob, ordered from most-likely-correct to least. Callers JSON.parse
+ * each in turn and pick the first that validates as a full contract.
+ *
+ * Order:
+ *   1. Content inside ```json ... ``` code fences (even if embedded in prose).
+ *      Agents commonly do this when they want to separate a human note from
+ *      the machine payload; treat the fenced block as authoritative.
+ *   2. The whole stdout, if it's a single bare JSON object (no prose).
+ *   3. Every balanced `{...}` substring found by scanning every `{` in stdout.
+ *      Handles the case where the agent inlined a stray `{word}` in prose
+ *      (the bug this function exists to work around): the first `{` in
+ *      stdout wasn't JSON at all. We try each in sequence.
  */
-function extractJsonObject(stdout: string): string | null {
-	const s = stripCodeFence(stdout.trim());
-	const start = s.indexOf("{");
-	if (start === -1) return null;
+function extractJsonCandidates(stdout: string): string[] {
+	const candidates: string[] = [];
+	const seen = new Set<string>();
+	const push = (s: string | null): void => {
+		if (!s) return;
+		if (seen.has(s)) return;
+		seen.add(s);
+		candidates.push(s);
+	};
+
+	// 1. ```json ... ``` fences — anywhere in the text.
+	const fenceRx = /```(?:json)?\s*\n([\s\S]+?)\n```/g;
+	for (const fenceMatch of stdout.matchAll(fenceRx)) {
+		const fenced = fenceMatch[1].trim();
+		const balanced = firstBalancedObject(fenced, 0);
+		if (balanced) push(balanced);
+	}
+
+	// 2. The full trimmed stdout as one object (no prose).
+	const trimmed = stdout.trim();
+	if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+		push(trimmed);
+	}
+
+	// 3. Every balanced `{...}` in the raw text. Most prompts produce
+	//    a handful of `{` at most, so O(n) scans is fine.
+	for (let i = 0; i < stdout.length; i++) {
+		if (stdout[i] !== "{") continue;
+		const balanced = firstBalancedObject(stdout, i);
+		if (balanced) push(balanced);
+	}
+
+	return candidates;
+}
+
+function firstBalancedObject(s: string, start: number): string | null {
+	if (s[start] !== "{") return null;
 	let depth = 0;
 	let inString = false;
 	let escaped = false;
@@ -262,10 +324,4 @@ function extractJsonObject(stdout: string): string | null {
 		}
 	}
 	return null;
-}
-
-function stripCodeFence(s: string): string {
-	// Strip a leading/trailing ```json ... ``` wrapper if present.
-	const m = /^```(?:json)?\s*\n([\s\S]+?)\n```\s*$/.exec(s);
-	return m ? m[1] : s;
 }
