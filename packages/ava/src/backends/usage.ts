@@ -89,10 +89,31 @@ export async function readClaudeUsageSince(opts: {
 	return usage;
 }
 
+// Claude Sonnet 4.5 published API rates (USD per million tokens).
+// We report API-equivalent cost even though Max runs on subscription —
+// the $ estimate is useful for rate-limit awareness + comparing run costs
+// across threads. If the CLI ever defaults to a different model and the
+// rates diverge meaningfully, bump these.
+const RATE_INPUT_PER_M = 3.0;
+const RATE_OUTPUT_PER_M = 15.0;
+const RATE_CACHE_READ_PER_M = 0.3;
+const RATE_CACHE_CREATE_PER_M = 3.75;
+
+export function estimateUsdCost(usage: BackendUsage): number {
+	return (
+		(usage.inputTokens * RATE_INPUT_PER_M) / 1_000_000 +
+		(usage.outputTokens * RATE_OUTPUT_PER_M) / 1_000_000 +
+		(usage.cacheReadTokens * RATE_CACHE_READ_PER_M) / 1_000_000 +
+		(usage.cacheCreateTokens * RATE_CACHE_CREATE_PER_M) / 1_000_000
+	);
+}
+
 /**
- * Compact human-friendly one-liner for the email footer. No USD cost
- * since Max is on a subscription — tokens and wall-clock are the
- * actually-useful numbers for rate-limit awareness.
+ * Compact human-friendly one-liner for the email footer. Includes tokens,
+ * wall-clock, and API-equivalent USD estimate. The $ value is what the
+ * turn would have cost at published Sonnet 4.5 API rates — subscription
+ * pricing isn't literally per-turn, but this gives a useful proxy for
+ * "how expensive was this run" when looking at the thread audit log.
  */
 export function formatUsageFooter(usage: BackendUsage): string {
 	const fmt = (n: number): string => {
@@ -101,5 +122,7 @@ export function formatUsageFooter(usage: BackendUsage): string {
 		return `${(n / 1_000_000).toFixed(2)}M`;
 	};
 	const seconds = (usage.durationMs / 1000).toFixed(1);
-	return `— cost: ${fmt(usage.inputTokens)}in / ${fmt(usage.outputTokens)}out / ${fmt(usage.cacheReadTokens)} cache-read · ${usage.turnCount} turns · ${seconds}s wall`;
+	const usd = estimateUsdCost(usage);
+	const usdStr = usd < 0.01 ? "<$0.01" : `$${usd.toFixed(2)}`;
+	return `— cost: ${fmt(usage.inputTokens)}in / ${fmt(usage.outputTokens)}out / ${fmt(usage.cacheReadTokens)} cache-read · ${usage.turnCount} turns · ${seconds}s · ${usdStr} est`;
 }
