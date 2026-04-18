@@ -126,6 +126,21 @@ EOF
   "
 fi
 
+# Git identity for commits the coding agent produces. Vercel (and other
+# GitHub apps) require the author to match an identity the user can vouch
+# for — Ava's own mailbox isn't a Vercel team member, so commits authored
+# as `Ava <claude@actualvoice.ai>` get deploy-check-failed. We pin to the
+# human owner (Min / max@) so PRs land cleanly. Override via
+# AVA_GIT_USER_NAME / AVA_GIT_USER_EMAIL env vars if needed.
+AVA_GIT_USER_NAME="${AVA_GIT_USER_NAME:-Min Liu}"
+AVA_GIT_USER_EMAIL="${AVA_GIT_USER_EMAIL:-minliu905@gmail.com}"
+docker exec -u 1000 "$CONTAINER" sh -euc "
+  git config --global user.name  '$AVA_GIT_USER_NAME'
+  git config --global user.email '$AVA_GIT_USER_EMAIL'
+  git config --global init.defaultBranch main
+  git config --global pull.rebase false
+"
+
 # Host-side: create the bare repo if it does not exist yet
 if [ ! -d "$DATA_DIR/repo.git" ]; then
   git clone --bare "$REPO_URL" "$DATA_DIR/repo.git"
