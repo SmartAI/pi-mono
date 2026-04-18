@@ -116,7 +116,11 @@ async function processMarker(opts: {
 
 	const reason = markerContent.reason?.trim() || "retry requested by meta-command";
 	const syntheticMsgId = `<retry-${randomUUID()}@ava.local>`;
-	const subject = /^re:/i.test(inbound.subject) ? inbound.subject : `Re: ${inbound.subject}`;
+	// Mirror the thread's canonical (first-inbound) subject if we have one;
+	// the first inbound's subject IS what Gmail uses as the thread's subject,
+	// and subsequent sends must match for threadId threading to stick.
+	const canonicalSubject = inbound.canonicalSubject || inbound.subject;
+	const subject = /^re:/i.test(canonicalSubject) ? canonicalSubject : `Re: ${canonicalSubject}`;
 	const synthetic = {
 		kind: "inbound" as const,
 		gmailMessageId: syntheticMsgId,
@@ -142,12 +146,29 @@ interface LatestInboundMeta {
 	from: string;
 	to: string[];
 	cc: string[];
-	subject: string;
+	subject: string; // latest inbound's subject (for recipient routing / log display)
+	canonicalSubject: string; // first real inbound's subject (for Gmail threading)
 }
 
 async function findLatestInbound(logPath: string): Promise<LatestInboundMeta | null> {
 	const text = await readFile(logPath, "utf-8");
 	const lines = text.split("\n").filter((l) => l.trim());
+	// First pass: walk forward to find the FIRST real (non-synthetic) inbound
+	// for the canonical subject.
+	let canonicalSubject = "";
+	for (const line of lines) {
+		try {
+			const row = JSON.parse(line);
+			if (row.kind !== "inbound") continue;
+			const msgId = (row.gmailMessageId ?? "") as string;
+			if (msgId.startsWith("<retry-") && msgId.endsWith("@ava.local>")) continue;
+			canonicalSubject = (row.subject ?? "") as string;
+			break;
+		} catch {
+			// skip malformed
+		}
+	}
+	// Second pass: walk backward for the latest inbound (for recipient routing).
 	for (let i = lines.length - 1; i >= 0; i--) {
 		try {
 			const row = JSON.parse(lines[i]);
@@ -157,6 +178,7 @@ async function findLatestInbound(logPath: string): Promise<LatestInboundMeta | n
 					to: row.to ?? [],
 					cc: row.cc ?? [],
 					subject: row.subject ?? "",
+					canonicalSubject: canonicalSubject || (row.subject ?? ""),
 				};
 			}
 		} catch {

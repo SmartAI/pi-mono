@@ -99,6 +99,12 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		skills,
 	});
 
+	// Use the thread's FIRST inbound subject for all outgoing mail. Gmail's
+	// threadId honoring requires subject match; Max has been known to edit
+	// the subject mid-thread which otherwise causes new-thread spawning.
+	const canonicalSubject = (await threadCanonicalSubject(store, tid)) || newestInbound.subject;
+	const replySubject = reSubject(canonicalSubject);
+
 	let result = await runBackend(primary, deps, tid, prompt);
 	let backendUsed: BackendName = primary;
 	let kind: FailureKind = deps.allowedBackends[primary].classify(result);
@@ -109,7 +115,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 			recipients.to,
 			recipients.cc,
 			newestInbound.gmailMessageId,
-			reSubject(newestInbound.subject),
+			replySubject,
 		);
 		result = await runBackend(fallback, deps, tid, prompt);
 		backendUsed = fallback;
@@ -117,7 +123,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	}
 
 	if (kind !== "ok") {
-		await handleFailure(kind, { deps, tid, newestInbound, primary, fallback, result });
+		await handleFailure(kind, { deps, tid, newestInbound, primary, fallback, result, replySubject });
 		return;
 	}
 
@@ -182,7 +188,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 				recipients.to,
 				recipients.cc,
 				newestInbound.gmailMessageId,
-				reSubject(newestInbound.subject),
+				replySubject,
 			);
 			return;
 		}
@@ -232,7 +238,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		to: recipients.to,
 		cc: recipients.cc,
 		inReplyToMessageId: newestInbound.gmailMessageId,
-		subject: reSubject(newestInbound.subject),
+		subject: replySubject,
 		bodyText: finalBody,
 		attachments: attached.map((a) => ({ filename: a.filename, path: a.path, bytes: a.bytes })),
 	});
@@ -283,10 +289,11 @@ async function handleFailure(
 		primary: BackendName;
 		fallback: BackendName | null;
 		result: BackendRunResult;
+		replySubject: string;
 	},
 ): Promise<void> {
-	const { deps, tid, newestInbound, primary, result } = ctx;
-	const subject = reSubject(newestInbound.subject);
+	const { deps, tid, newestInbound, primary, result, replySubject } = ctx;
+	const subject = replySubject;
 	const recipients = buildReplyRecipients(newestInbound, deps.selfAddress, deps.settings.replyDefaults.alwaysCc);
 	if (kind === "auth") {
 		await deps.store.appendFailure(tid, {
@@ -351,6 +358,42 @@ interface NewestInbound {
 	subject: string;
 	bodyText: string;
 	attachments: Array<{ filename: string; path: string; bytes: number }>;
+}
+
+/**
+ * Return the thread's canonical subject — the subject of the FIRST real
+ * (non-synthetic) inbound in the log. Gmail threads by both threadId AND
+ * subject when `users.messages.send` is called with a threadId — if our
+ * outgoing subject doesn't match the thread's original, Gmail silently
+ * ignores the threadId and creates a new thread.
+ *
+ * This bit us on threads where Max edited the subject mid-conversation
+ * (e.g. "[Action Required]Re: ..."): the latest inbound's subject no
+ * longer matched the thread's canonical, so Ava's reply spawned a new
+ * Gmail thread. Using the first-inbound subject everywhere keeps Gmail's
+ * threading rule satisfied regardless of drift in later messages.
+ *
+ * Skips synthetic retry-trigger inbounds (msgid `<retry-...@ava.local>`)
+ * since their subject is derived from whatever the latest real inbound
+ * was at retry time and doesn't represent the thread's true origin.
+ */
+export async function threadCanonicalSubject(store: Store, tid: string): Promise<string> {
+	const logPath = join(store.threadPathAbs(tid), "log.jsonl");
+	if (!existsSync(logPath)) return "";
+	const content = await readFile(logPath, "utf-8");
+	for (const line of content.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const row = JSON.parse(line);
+			if (row.kind !== "inbound") continue;
+			const msgId = (row.gmailMessageId ?? "") as string;
+			if (msgId.startsWith("<retry-") && msgId.endsWith("@ava.local>")) continue;
+			return (row.subject ?? "") as string;
+		} catch {
+			// skip malformed line
+		}
+	}
+	return "";
 }
 
 async function readNewestInbound(store: Store, tid: string): Promise<NewestInbound | null> {

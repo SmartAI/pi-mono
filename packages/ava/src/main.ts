@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { buildReplyRecipients, defaultBackends, runThread } from "./agent-invoker.js";
+import { runAutoRetry } from "./auto-retry.js";
 import { shouldEmitPiTosWarning } from "./backends/select.js";
 import { Dispatcher } from "./dispatcher.js";
 import { GmailClient } from "./gmail/client.js";
@@ -165,6 +166,15 @@ async function main(): Promise<void> {
 		signal: shutdown.signal,
 	}).catch((e) => log.error("retry-queue loop crashed", { error: String(e) }));
 
+	// Auto-retry — periodically scans all thread logs and drops retry
+	// markers for threads whose latest event is a fixable internal failure
+	// (parse errors today). No user email needed; the retry-queue watcher
+	// above picks up the markers this produces and re-enqueues the threads.
+	const autoRetryPromise = runAutoRetry({
+		dataDir,
+		signal: shutdown.signal,
+	}).catch((e) => log.error("auto-retry loop crashed", { error: String(e) }));
+
 	try {
 		await runPoller({
 			client: gmail,
@@ -201,6 +211,7 @@ async function main(): Promise<void> {
 		clearInterval(pruneTimer);
 		await schedulerPromise;
 		await retryQueuePromise;
+		await autoRetryPromise;
 		await dispatcher.drain();
 	}
 }
