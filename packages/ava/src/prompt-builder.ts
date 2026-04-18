@@ -77,7 +77,7 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 			`## System facts`,
 			`- You have no background workers and no runtime between turns. This turn ends the moment you stop emitting stdout. Nothing runs after you exit — anything you claim in \`email_body\` or \`actions\` must be produced by tool calls in this turn.`,
 			`- Project skills live at \`<worktree>/.claude/skills/\` and are loaded automatically by your runtime — you don't need a list here. Check the /skill-name commands your runtime exposes.`,
-			`- \`${input.outgoingPath}/\` is for binary attachments only (screenshots, diffs, PDFs, generated reports). Do NOT write your reply text to a file anywhere — the reply lives inside the JSON \`email_body\` field of your response.`,
+			`- To attach a file to the outgoing email, write it anywhere in the sandbox (your worktree, /tmp, /workspace) and then declare it in the \`attachments\` array of your response JSON (see schema below). Ava does NOT scan a directory — the contract is authoritative. The reply text itself lives inside \`email_body\` — do NOT write reply text to a file.`,
 			`- Sender attachments (if any) are listed in the user message with absolute paths inside this sandbox — just \`cat\` / \`read\` them directly.`,
 		].join("\n"),
 	);
@@ -118,7 +118,8 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 			`    {"kind": "file_write", "path": "<absolute path>"},`,
 			`    {"kind": "shell", "cmd": "<first 100 chars>", "exit": <int>}`,
 			`  ],`,
-			`  "unfinished": [ {"what": "<short description>", "reason": "<why not done this turn>"} ]`,
+			`  "unfinished": [ {"what": "<short description>", "reason": "<why not done this turn>"} ],`,
+			`  "attachments": [ {"path": "<absolute sandbox path>", "filename": "<optional display name>"} ]`,
 			`}`,
 			"```",
 			``,
@@ -127,6 +128,7 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 			`- \`email_body\` is the reply text. Write what a careful engineer would write to a teammate — direct, specific, no preambles ("Here is my reply:"), no future-promises ("ETA 45 min", "I'll ping you when done"). If you couldn't finish, say so.`,
 			`- \`unfinished\` captures work that was planned but didn't land this turn. OK to be non-empty with \`status: "partial"\`.`,
 			`- If the request can't reasonably be done in one turn, set \`status: "blocked"\`, put the reason in \`email_body\`, and suggest a split. Do not start and abandon.`,
+			`- \`attachments\`: one object per file to attach. \`path\` must be an absolute sandbox path that exists. \`filename\` is optional (defaults to basename of path). Omit the array or set to [] when there's nothing to attach.`,
 		].join("\n"),
 	);
 

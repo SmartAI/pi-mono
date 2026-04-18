@@ -28,13 +28,16 @@ describe("buildPrompt", () => {
 		expect(systemPrompt).not.toContain("fix the typo on /signup");
 	});
 
-	it("puts worktree path and outgoing path in the system prompt", () => {
+	it("puts worktree path in the system prompt and requires attachments declared via contract", () => {
 		const { systemPrompt } = buildPrompt({
 			...BASE,
 			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
 		});
 		expect(systemPrompt).toContain("/workspace/threads/T-1/worktree");
-		expect(systemPrompt).toContain("./outgoing");
+		// New behavior: attachments are declared in the JSON contract, not
+		// by dropping into a magic directory.
+		expect(systemPrompt).toMatch(/attachments.*array.*response JSON/i);
+		expect(systemPrompt).toMatch(/contract is authoritative/i);
 	});
 
 	it("injects memory every turn when non-empty (no isFirstRun gate)", () => {

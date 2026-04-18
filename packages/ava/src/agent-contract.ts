@@ -12,12 +12,23 @@ export interface AgentAction {
 	[field: string]: unknown;
 }
 
+export interface AgentAttachment {
+	path: string; // absolute path the file lives at (sandbox-visible, e.g. /workspace/.../foo.md)
+	filename?: string; // optional display name; defaults to basename(path)
+}
+
 export interface AgentContract {
 	status: AgentStatus;
 	email_body: string;
 	summary?: string;
 	actions: AgentAction[];
 	unfinished?: Array<{ what: string; reason: string }>;
+	// Artifacts the agent explicitly wants attached to the outbound email.
+	// Declaring them here is the robust contract path — Ava doesn't have to
+	// guess from directory conventions. Paths must be sandbox-visible
+	// absolute paths; Ava translates them back to host paths via the
+	// containerDataDir prefix mapping.
+	attachments?: AgentAttachment[];
 }
 
 export interface ContractParseOk {
@@ -92,6 +103,26 @@ export function parseAgentContract(stdout: string): ContractParseResult {
 			};
 		});
 	}
+	let attachments: AgentAttachment[] | undefined;
+	if (obj.attachments !== undefined) {
+		if (!Array.isArray(obj.attachments)) {
+			return { ok: false, reason: "attachments is not an array", rawStdout: stdout };
+		}
+		attachments = [];
+		for (const [i, a] of (obj.attachments as unknown[]).entries()) {
+			if (!a || typeof a !== "object" || Array.isArray(a)) {
+				return { ok: false, reason: `attachments[${i}] is not an object`, rawStdout: stdout };
+			}
+			const ao = a as Record<string, unknown>;
+			if (typeof ao.path !== "string" || !ao.path) {
+				return { ok: false, reason: `attachments[${i}].path missing`, rawStdout: stdout };
+			}
+			attachments.push({
+				path: ao.path,
+				filename: typeof ao.filename === "string" && ao.filename ? ao.filename : undefined,
+			});
+		}
+	}
 	return {
 		ok: true,
 		contract: {
@@ -100,6 +131,7 @@ export function parseAgentContract(stdout: string): ContractParseResult {
 			summary: typeof obj.summary === "string" ? obj.summary : undefined,
 			actions,
 			unfinished,
+			attachments,
 		},
 	};
 }
@@ -111,6 +143,77 @@ export function parseAgentContract(stdout: string): ContractParseResult {
  */
 export function detectDoneEmptyMismatch(contract: AgentContract): boolean {
 	return contract.status === "done" && contract.actions.length === 0;
+}
+
+export interface ResolvedAttachment {
+	filename: string;
+	hostPath: string; // fully-resolved host path Ava can stat/read
+	bytes: number;
+}
+
+export interface AttachmentResolveResult {
+	resolved: ResolvedAttachment[];
+	errors: Array<{ declaredPath: string; reason: string }>;
+	overCap: Array<{ filename: string; bytes: number }>;
+}
+
+/**
+ * Turn the contract's declared attachment paths (sandbox-visible) into host
+ * paths Ava can actually open, with safety + existence + size checks.
+ *
+ * Rules:
+ * - Path must be absolute (starts with /).
+ * - Path must start with containerDataDir (e.g. /workspace) — we don't let
+ *   the agent attach /etc/passwd. Conservative but covers every real use
+ *   case since all Ava-visible state lives under /workspace.
+ * - File must exist and fit under the per-reply cap.
+ */
+export async function resolveContractAttachments(
+	declared: AgentAttachment[],
+	opts: {
+		hostDataDir: string; // e.g. /home/mliu/.../data
+		containerDataDir: string; // e.g. /workspace
+		perReplyCapBytes: number;
+	},
+): Promise<AttachmentResolveResult> {
+	const { stat } = await import("node:fs/promises");
+	const { basename } = await import("node:path");
+	const resolved: ResolvedAttachment[] = [];
+	const errors: AttachmentResolveResult["errors"] = [];
+	const overCap: AttachmentResolveResult["overCap"] = [];
+	let running = 0;
+	for (const att of declared) {
+		const p = att.path;
+		if (!p.startsWith("/")) {
+			errors.push({ declaredPath: p, reason: "path is not absolute" });
+			continue;
+		}
+		if (!p.startsWith(`${opts.containerDataDir}/`) && p !== opts.containerDataDir) {
+			errors.push({ declaredPath: p, reason: `path must be under ${opts.containerDataDir}` });
+			continue;
+		}
+		const hostPath = `${opts.hostDataDir}${p.slice(opts.containerDataDir.length)}`;
+		let size: number;
+		try {
+			const s = await stat(hostPath);
+			if (!s.isFile()) {
+				errors.push({ declaredPath: p, reason: "not a regular file" });
+				continue;
+			}
+			size = s.size;
+		} catch (e) {
+			errors.push({ declaredPath: p, reason: `stat failed: ${(e as Error).message}` });
+			continue;
+		}
+		const filename = att.filename || basename(hostPath);
+		if (running + size > opts.perReplyCapBytes) {
+			overCap.push({ filename, bytes: size });
+			continue;
+		}
+		running += size;
+		resolved.push({ filename, hostPath, bytes: size });
+	}
+	return { resolved, errors, overCap };
 }
 
 /**

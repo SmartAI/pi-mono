@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { buildEmailBody, parseAgentContract } from "./agent-contract.js";
+import { buildEmailBody, parseAgentContract, resolveContractAttachments } from "./agent-contract.js";
 import { ClaudeCodeBackend } from "./backends/claude-code.js";
 import { CodexBackend } from "./backends/codex.js";
 import { PiBackend } from "./backends/pi.js";
@@ -142,9 +142,36 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	const contract = parsed.contract;
 
 	const replyBody = normalizeReply(buildEmailBody(contract));
-	const { attached, overflow } = await scanOutgoing(store.threadPathAbs(tid), settings.attachments.perReplyMaxBytes);
+
+	// Resolve attachments from the contract's declared list — the robust
+	// path. Falls back to scanning <threadDir>/outgoing/ for anything the
+	// agent may have dropped there without declaring (safety net against
+	// forgotten declarations; will be deprecated once the contract path
+	// is proven stable across all inbound agents' resumed sessions).
+	const declared = contract.attachments ?? [];
+	const { resolved, errors, overCap } = await resolveContractAttachments(declared, {
+		hostDataDir: store.dataDir,
+		containerDataDir: deps.containerDataDir,
+		perReplyCapBytes: settings.attachments.perReplyMaxBytes,
+	});
+	if (errors.length) {
+		log.warn("agent declared attachments that failed to resolve", { threadId: tid, errors });
+	}
+	const remainingCap = settings.attachments.perReplyMaxBytes - resolved.reduce((n, a) => n + a.bytes, 0);
+	const scanned = await scanOutgoing(store.threadPathAbs(tid), remainingCap);
+	// Dedupe against contract-declared entries by filename (the most common
+	// overlap case) and by resolved host path.
+	const seenPaths = new Set(resolved.map((a) => a.hostPath));
+	const seenFilenames = new Set(resolved.map((a) => a.filename));
+	const fallbackAttached = scanned.attached.filter((f) => !seenPaths.has(f.path) && !seenFilenames.has(f.filename));
+	const attached = [
+		...resolved.map((a) => ({ filename: a.filename, path: a.hostPath, bytes: a.bytes })),
+		...fallbackAttached,
+	];
+	const overflow = [...overCap.map((o) => ({ filename: o.filename, bytes: o.bytes, path: "" })), ...scanned.overflow];
+	const capMB = Math.floor(settings.attachments.perReplyMaxBytes / (1024 * 1024));
 	const finalBody = overflow.length
-		? `${replyBody}\n\n---\n(Some files exceeded the ${Math.floor(settings.attachments.perReplyMaxBytes / (1024 * 1024))}MB attachment cap and were not attached: ${overflow.map((f) => f.filename).join(", ")}. Push these to the PR instead.)`
+		? `${replyBody}\n\n---\n(Some files exceeded the ${capMB}MB attachment cap and were not attached: ${overflow.map((f) => f.filename).join(", ")}. Push these to the PR instead.)`
 		: replyBody;
 
 	const sentId = await deps.sendReply({
