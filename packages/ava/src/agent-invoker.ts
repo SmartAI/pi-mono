@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { buildEmailBody, parseAgentContract } from "./agent-contract.js";
 import { ClaudeCodeBackend } from "./backends/claude-code.js";
 import { CodexBackend } from "./backends/codex.js";
 import { PiBackend } from "./backends/pi.js";
@@ -95,7 +96,29 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		return;
 	}
 
-	const replyBody = normalizeReply(result.stdout);
+	const parsed = parseAgentContract(result.stdout);
+	if (!parsed.ok) {
+		log.error("agent contract parse failed", { threadId: tid, reason: parsed.reason });
+		await deps.sendStatus(
+			tid,
+			[
+				`Ava couldn't parse the agent's response as the required JSON contract.`,
+				``,
+				`Parse failure: ${parsed.reason}`,
+				``,
+				`This means the reply wasn't sent — the raw agent output is logged server-side at data/threads/${tid}/ for review.`,
+				`Please reply to this email to retry; I'll re-run the agent on the same thread.`,
+			].join("\n"),
+			recipients.to,
+			recipients.cc,
+			newestInbound.gmailMessageId,
+			reSubject(newestInbound.subject),
+		);
+		return;
+	}
+	const contract = parsed.contract;
+
+	const replyBody = normalizeReply(buildEmailBody(contract));
 	const { attached, overflow } = await scanOutgoing(store.threadPathAbs(tid), settings.attachments.perReplyMaxBytes);
 	const finalBody = overflow.length
 		? `${replyBody}\n\n---\n(Some files exceeded the ${Math.floor(settings.attachments.perReplyMaxBytes / (1024 * 1024))}MB attachment cap and were not attached: ${overflow.map((f) => f.filename).join(", ")}. Push these to the PR instead.)`
@@ -118,6 +141,13 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		at: new Date().toISOString(),
 		backendUsed,
 		attachments: attached.map((a) => ({ filename: a.filename, bytes: a.bytes })),
+		contract: {
+			status: contract.status,
+			summary: contract.summary,
+			actionCount: contract.actions.length,
+			actionKinds: contract.actions.map((a) => a.kind),
+			unfinishedCount: contract.unfinished?.length ?? 0,
+		},
 	});
 }
 

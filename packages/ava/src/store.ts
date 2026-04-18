@@ -21,6 +21,18 @@ export type LogEntry =
 			at: string;
 			backendUsed: string;
 			attachments: Array<{ filename: string; bytes: number }>;
+			// Summary of the JSON contract the agent returned on this turn.
+			// Full email body + action list isn't duplicated here — it's in
+			// the Claude session transcript already. This is a compact audit
+			// trail so `tail log.jsonl | jq .` tells you at a glance whether
+			// the agent actually did anything on this turn.
+			contract?: {
+				status: "done" | "partial" | "blocked";
+				summary?: string;
+				actionCount: number;
+				actionKinds: string[];
+				unfinishedCount: number;
+			};
 	  }
 	| {
 			kind: "scheduled-fire";

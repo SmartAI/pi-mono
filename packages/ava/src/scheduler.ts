@@ -242,17 +242,25 @@ function buildScheduledPrompt(input: {
 	worktreePath: string;
 	outgoingPath: string;
 }): string {
+	// Scheduled prompts stay plain-text (no JSON contract) because their
+	// output is a pre-formatted email body, not a structured agent report.
+	// The task text comes from the operator who wrote the schedule entry;
+	// they own the output shape.
 	return [
-		`You are Ava, an engineering teammate for ActualVoice, running a scheduled job — NOT replying to an email.`,
+		`You are Ava running a scheduled job — NOT replying to an email.`,
 		`Working directory: ${input.worktreePath}.`,
 		`Today's date: ${input.dateStr}.`,
 		`Schedule: ${input.entry.name} (cron: ${input.entry.cron}).`,
 		`Recipients: ${input.entry.to.join(", ")}.`,
 		``,
+		`## System facts`,
+		`- You have no background workers and no runtime between turns — everything you produce must happen in this turn's tool calls.`,
+		`- Skills are auto-discovered from \`.claude/skills/\` — use them when the task references one.`,
+		`- \`${input.outgoingPath}/\` is only for binary or large attachments (screenshots, diffs, PDFs). Do NOT write your reply text to a file.`,
+		``,
 		`## How to output`,
-		`- Your **final stdout** becomes the email body. Plain text (code fences OK). No preambles, no "Here's the summary" meta-lines — just the message itself as the last thing you emit.`,
-		`- **Do NOT write a copy of your output to a file.** No \`reply.txt\`, \`message.md\`, \`report.md\`, or similar. The body exists only in stdout.`,
-		`- \`${input.outgoingPath}/\` is only for binary or large artifacts to attach (screenshots, diffs, PDFs, generated reports). Leave empty if nothing to attach.`,
+		`- Your **final stdout** becomes the email body verbatim. Plain text, code fences OK, no preambles, no "Here's the report:" framing — just the message.`,
+		`- If you have nothing to report (e.g. the health-check skill's silent-when-stable case), emit **empty stdout** and Ava will skip sending entirely.`,
 		``,
 		`## Task`,
 		input.entry.prompt,
