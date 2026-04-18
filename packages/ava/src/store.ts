@@ -22,6 +22,18 @@ export type LogEntry =
 			backendUsed: string;
 			attachments: Array<{ filename: string; bytes: number }>;
 	  }
+	| {
+			kind: "scheduled-fire";
+			name: string; // schedule entry name
+			cron: string;
+			at: string;
+			backend: string;
+			subject: string;
+			outcome: "sent" | "failed";
+			gmailMessageId?: string; // present when outcome=sent
+			exitCode?: number; // present when outcome=failed
+			failureKind?: string; // present when outcome=failed
+	  }
 	| { kind: "allowlist-reject"; gmailMessageId: string; from: string; reason: string; at: string };
 
 export class Store {
@@ -50,6 +62,11 @@ export class Store {
 	}
 
 	async appendReject(threadId: string, entry: Extract<LogEntry, { kind: "allowlist-reject" }>): Promise<void> {
+		await this.ensureThread(threadId);
+		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	}
+
+	async appendScheduledFire(threadId: string, entry: Extract<LogEntry, { kind: "scheduled-fire" }>): Promise<void> {
 		await this.ensureThread(threadId);
 		await appendFile(join(this.threadDir(threadId), "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}

@@ -50,7 +50,21 @@ export interface AvaSettings {
 		// De-duped against To and against self, so self-as-sender never CCs itself.
 		alwaysCc: string[];
 	};
+	schedules: {
+		enabled: boolean; // default true — flip false to pause all cron jobs without removing the config
+		tickMs: number; // default 30_000 — how often the scheduler checks cron matches
+	};
 	gitFetchIntervalMs: number; // default 10 * 60_000
+}
+
+export interface ScheduleEntry {
+	name: string; // filesystem-safe id ([a-z0-9][a-z0-9-]*); used as thread id prefix
+	cron: string; // 5-field crontab expression — evaluated in host local time
+	to: string[]; // primary recipients (joined with ", " for the To: header)
+	cc?: string[]; // optional extra Cc
+	subject: string; // supports {date} token → today's YYYY-MM-DD
+	prompt: string; // instructions for Ava; stdout becomes the email body
+	backend?: BackendName; // optional override of settings.backend.default
 }
 
 export const DEFAULT_SETTINGS: AvaSettings = {
@@ -60,5 +74,6 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	attachments: { perReplyMaxBytes: 20 * 1024 * 1024 },
 	dispatcher: { maxConcurrency: 2 },
 	replyDefaults: { alwaysCc: [] },
+	schedules: { enabled: true, tickMs: 30_000 },
 	gitFetchIntervalMs: 10 * 60_000,
 };

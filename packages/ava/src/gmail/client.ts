@@ -61,23 +61,21 @@ export class GmailClient {
 	}
 
 	async send(opts: {
-		threadId: string;
+		threadId?: string; // omit to start a new Gmail thread (used by scheduled jobs)
 		to: string;
 		cc?: string[];
 		subject: string;
 		bodyText: string;
-		inReplyTo: string;
-		references: string[];
+		inReplyTo?: string; // omit for fresh sends with no reply context
+		references?: string[]; // omit for fresh sends with no reply context
 		attachments: Array<{ filename: string; path: string }>;
 	}): Promise<string> {
 		const mime = await buildMime(opts);
-		const res = await this.gmail.users.messages.send({
-			userId: "me",
-			requestBody: {
-				threadId: opts.threadId,
-				raw: mime.toString("base64url"),
-			},
-		});
+		const requestBody: gmail_v1.Schema$Message = {
+			raw: mime.toString("base64url"),
+		};
+		if (opts.threadId) requestBody.threadId = opts.threadId;
+		const res = await this.gmail.users.messages.send({ userId: "me", requestBody });
 		return res.data.id ?? "";
 	}
 }
@@ -87,8 +85,8 @@ async function buildMime(opts: {
 	cc?: string[];
 	subject: string;
 	bodyText: string;
-	inReplyTo: string;
-	references: string[];
+	inReplyTo?: string;
+	references?: string[];
 	attachments: Array<{ filename: string; path: string }>;
 }): Promise<Buffer> {
 	const boundary = `ava-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -96,8 +94,8 @@ async function buildMime(opts: {
 		`To: ${opts.to}`,
 		...(opts.cc && opts.cc.length > 0 ? [`Cc: ${opts.cc.join(", ")}`] : []),
 		`Subject: ${encodeHeader(opts.subject)}`,
-		`In-Reply-To: ${opts.inReplyTo}`,
-		`References: ${opts.references.join(" ")}`,
+		...(opts.inReplyTo ? [`In-Reply-To: ${opts.inReplyTo}`] : []),
+		...(opts.references && opts.references.length > 0 ? [`References: ${opts.references.join(" ")}`] : []),
 		`MIME-Version: 1.0`,
 		`Content-Type: multipart/mixed; boundary="${boundary}"`,
 	];

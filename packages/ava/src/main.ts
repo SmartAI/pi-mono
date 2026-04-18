@@ -11,6 +11,7 @@ import { gmailAuthSetup } from "./gmail/oauth-setup.js";
 import { runPoller } from "./gmail/poller.js";
 import { log } from "./log.js";
 import { makeSandboxExec } from "./sandbox.js";
+import { runScheduler } from "./scheduler.js";
 import { Store } from "./store.js";
 import { type AvaSettings, DEFAULT_SETTINGS } from "./types.js";
 import { WorktreeManager } from "./worktree.js";
@@ -138,6 +139,19 @@ async function main(): Promise<void> {
 		24 * 60 * 60 * 1000,
 	);
 
+	const schedulerPromise = runScheduler({
+		dataDir,
+		store,
+		settings,
+		backends,
+		ensureWorktree: (tid) => wm.ensureWorktree(tid),
+		sandboxExec,
+		cwdInContainer,
+		containerDataDir,
+		gmail,
+		signal: shutdown.signal,
+	}).catch((e) => log.error("scheduler loop crashed", { error: String(e) }));
+
 	try {
 		await runPoller({
 			client: gmail,
@@ -150,6 +164,7 @@ async function main(): Promise<void> {
 		});
 	} finally {
 		clearInterval(pruneTimer);
+		await schedulerPromise;
 		await dispatcher.drain();
 	}
 }
@@ -164,6 +179,7 @@ async function loadSettings(dataDir: string): Promise<AvaSettings> {
 		backend: { ...DEFAULT_SETTINGS.backend, ...(raw.backend ?? {}) },
 		dispatcher: { ...DEFAULT_SETTINGS.dispatcher, ...(raw.dispatcher ?? {}) },
 		replyDefaults: { ...DEFAULT_SETTINGS.replyDefaults, ...(raw.replyDefaults ?? {}) },
+		schedules: { ...DEFAULT_SETTINGS.schedules, ...(raw.schedules ?? {}) },
 	};
 }
 

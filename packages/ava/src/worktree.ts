@@ -10,12 +10,21 @@ export interface WorktreeManagerOpts {
 	threadsRoot: string;
 }
 
+function branchFor(threadId: string): string {
+	// Hex thread IDs (Gmail's) collapse safely to an 8-char prefix — still
+	// distinct at the scale we run. Anything else (scheduled threads, manual
+	// IDs) keeps its full name to avoid accidental collisions between
+	// `sched-weekly-sync` and `sched-weekly-wrap`, which would both become
+	// `sched-we` under the old prefix.
+	return `ava/${/^[0-9a-f]+$/i.test(threadId) ? threadId.slice(0, 8) : threadId}`;
+}
+
 export class WorktreeManager {
 	constructor(private opts: WorktreeManagerOpts) {}
 
 	async ensureWorktree(threadId: string): Promise<string> {
 		const wtPath = join(this.opts.threadsRoot, threadId, "worktree");
-		const branch = `ava/${threadId.slice(0, 8)}`;
+		const branch = branchFor(threadId);
 		if (existsSync(wtPath)) return wtPath;
 		// Self-heal against stale registry entries from a previously-deleted
 		// worktree dir (e.g. manual rm -rf on ./data/threads/<tid>/). Without
