@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentContract } from "./agent-contract.js";
 import { buildEmailBody, parseAgentContract, resolveContractAttachments } from "./agent-contract.js";
 import { ClaudeCodeBackend } from "./backends/claude-code.js";
 import { CodexBackend } from "./backends/codex.js";
@@ -121,34 +122,71 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	}
 
 	const parsed = parseAgentContract(result.stdout);
-	if (!parsed.ok) {
-		log.error("agent contract parse failed", { threadId: tid, reason: parsed.reason });
-		await store.appendFailure(tid, {
-			kind: "failure",
-			gmailMessageId: newestInbound.gmailMessageId,
-			category: "parse",
-			reason: `agent contract parse failed: ${parsed.reason}`,
-			detail: parsed.rawStdout.slice(0, 500),
-			at: new Date().toISOString(),
-		});
-		await deps.sendStatus(
-			tid,
-			[
-				`Ava couldn't parse the agent's response as the required JSON contract.`,
-				``,
-				`Parse failure: ${parsed.reason}`,
-				``,
-				`This means the reply wasn't sent — the raw agent output is logged server-side at data/threads/${tid}/ for review.`,
-				`Please reply to this email to retry; I'll re-run the agent on the same thread.`,
-			].join("\n"),
-			recipients.to,
-			recipients.cc,
-			newestInbound.gmailMessageId,
-			reSubject(newestInbound.subject),
-		);
-		return;
+	let contract: AgentContract;
+	if (parsed.ok) {
+		contract = parsed.contract;
+	} else {
+		// Parse failed. Before giving up and sending a diagnostic, see if the
+		// stdout is a substantive prose reply we can recover — the agent
+		// sometimes ignores the JSON contract on long sessions and emits a
+		// clean human reply instead. Losing that reply is a bigger cost than
+		// sending it wrapped in a "partial" contract with a warning prefix.
+		const prose = result.stdout.trim();
+		const looksLikeProseReply =
+			prose.length >= 100 && !prose.startsWith("Error") && !prose.startsWith("Traceback") && !/^\s*\{/.test(prose); // don't try to "recover" malformed JSON — that's a different failure
+		if (looksLikeProseReply) {
+			log.warn("agent contract parse failed; recovering prose reply", {
+				threadId: tid,
+				reason: parsed.reason,
+				stdoutChars: prose.length,
+			});
+			await store.appendFailure(tid, {
+				kind: "failure",
+				gmailMessageId: newestInbound.gmailMessageId,
+				category: "parse",
+				reason: `agent did not emit JSON contract; prose reply recovered (${parsed.reason})`,
+				detail: prose.slice(0, 500),
+				at: new Date().toISOString(),
+			});
+			contract = {
+				status: "partial",
+				email_body: `⚠ Agent did not emit the required JSON contract — actions/attachments metadata is missing. Recovered reply below.\n\n---\n\n${prose}`,
+				summary: "agent did not emit contract; prose recovered",
+				actions: [],
+				unfinished: [],
+				attachments: undefined,
+			};
+		} else {
+			log.error("agent contract parse failed and stdout not recoverable", {
+				threadId: tid,
+				reason: parsed.reason,
+			});
+			await store.appendFailure(tid, {
+				kind: "failure",
+				gmailMessageId: newestInbound.gmailMessageId,
+				category: "parse",
+				reason: `agent contract parse failed: ${parsed.reason}`,
+				detail: parsed.rawStdout.slice(0, 500),
+				at: new Date().toISOString(),
+			});
+			await deps.sendStatus(
+				tid,
+				[
+					`Ava couldn't parse the agent's response as the required JSON contract, and the stdout wasn't a recoverable prose reply either.`,
+					``,
+					`Parse failure: ${parsed.reason}`,
+					``,
+					`This means the reply wasn't sent — the raw agent output is logged server-side at data/threads/${tid}/ for review.`,
+					`Please reply to this email to retry; I'll re-run the agent on the same thread.`,
+				].join("\n"),
+				recipients.to,
+				recipients.cc,
+				newestInbound.gmailMessageId,
+				reSubject(newestInbound.subject),
+			);
+			return;
+		}
 	}
-	const contract = parsed.contract;
 
 	const replyBody = normalizeReply(buildEmailBody(contract));
 
