@@ -1,0 +1,47 @@
+#!/bin/sh
+# FORCE RULE: every commit must be authored by Min Liu <minliu905@gmail.com>.
+# Vercel deploy-preview checks require the author to be a verified team
+# member; Ava's own identity (claude@actualvoice.ai) isn't one, so PRs with
+# that author fail CI every time. This hook is the hard gate — the agent's
+# global git config points at Min Liu already, but `git commit --author ...`
+# and `GIT_AUTHOR_EMAIL=... git commit` both override that. We check the
+# actual resolved author at commit time and reject anything that isn't
+# Min Liu, regardless of how the agent tried to override.
+set -eu
+
+EXPECTED_NAME="Min Liu"
+EXPECTED_EMAIL="minliu905@gmail.com"
+
+IDENT=$(git var GIT_AUTHOR_IDENT 2>/dev/null || echo "")
+# git var returns:  Name <email> TIMESTAMP ZONE
+NAME=$(printf '%s' "$IDENT" | sed -n 's/^\(.*\) <.*$/\1/p')
+EMAIL=$(printf '%s' "$IDENT" | sed -n 's/^.*<\([^>]*\)>.*$/\1/p')
+
+if [ "$EMAIL" != "$EXPECTED_EMAIL" ] || [ "$NAME" != "$EXPECTED_NAME" ]; then
+  cat >&2 <<MSG
+============================================================
+COMMIT REJECTED — FORCE RULE violation
+============================================================
+  expected author: $EXPECTED_NAME <$EXPECTED_EMAIL>
+  got author:      $NAME <$EMAIL>
+
+Reason: Vercel deploy-preview checks fail whenever a PR commit
+is authored by a non-team-member (like Ava's own mailbox). Every
+commit pushed to SmartAI/voicepulse MUST carry Min Liu's identity.
+
+How to fix (from the agent):
+  - Do NOT pass --author=... to git commit
+  - Do NOT set GIT_AUTHOR_NAME or GIT_AUTHOR_EMAIL env vars
+  - Do NOT pass -c user.email=... or -c user.name=...
+  - The global config is already correct — just let it flow through.
+
+If you are legitimately amending an existing commit and need to
+take over authorship, use:
+  git commit --amend --reset-author --no-edit
+(which re-reads the global config — safe.)
+============================================================
+MSG
+  exit 1
+fi
+
+exit 0

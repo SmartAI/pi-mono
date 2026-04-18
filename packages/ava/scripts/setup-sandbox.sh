@@ -132,13 +132,26 @@ fi
 # as `Ava <claude@actualvoice.ai>` get deploy-check-failed. We pin to the
 # human owner (Min / max@) so PRs land cleanly. Override via
 # AVA_GIT_USER_NAME / AVA_GIT_USER_EMAIL env vars if needed.
+#
+# Plus a pre-commit hook that HARD-REJECTS any commit not authored by this
+# identity. Global config alone is a suggestion — `git commit --author ...`
+# or env-var overrides bypass it. The hook catches those and refuses the
+# commit. Required because Ava has (empirically) tried to override on
+# multiple PRs even with config pointing at the right identity.
 AVA_GIT_USER_NAME="${AVA_GIT_USER_NAME:-Min Liu}"
 AVA_GIT_USER_EMAIL="${AVA_GIT_USER_EMAIL:-minliu905@gmail.com}"
+docker exec -u 0 "$CONTAINER" install -d -m 755 -o 1000 -g 1000 /home/ava/.config/git/hooks
+docker cp "$(dirname "$0")/sandbox-hooks/pre-commit" "$CONTAINER":/home/ava/.config/git/hooks/pre-commit
+docker exec -u 0 "$CONTAINER" sh -euc '
+  chown 1000:1000 /home/ava/.config/git/hooks/pre-commit
+  chmod 755 /home/ava/.config/git/hooks/pre-commit
+'
 docker exec -u 1000 "$CONTAINER" sh -euc "
   git config --global user.name  '$AVA_GIT_USER_NAME'
   git config --global user.email '$AVA_GIT_USER_EMAIL'
   git config --global init.defaultBranch main
   git config --global pull.rebase false
+  git config --global core.hooksPath /home/ava/.config/git/hooks
 "
 
 # Host-side: create the bare repo if it does not exist yet
