@@ -33,6 +33,16 @@ export interface BuildPromptInput {
 	// duplicate Claude Code's internal skill list. This field is for skills
 	// that apply across projects (e.g. sandbox ops, mail triage).
 	skills: SkillMeta[];
+	// Gmail thread URL (constructed from the Gmail threadId) so the agent
+	// can reference the source conversation when filing GitHub issues.
+	gmailThreadUrl: string;
+	// Issue numbers already filed on GitHub from prior turns of this
+	// thread. Extracted from outbound.contract.linkedIssueNumbers. The
+	// force-rule in SOUL says: if this list is non-empty, COMMENT on an
+	// existing issue rather than filing a new one.
+	linkedIssueNumbers: number[];
+	// PR numbers already opened/updated from prior turns.
+	linkedPrNumbers: number[];
 }
 
 export interface BuiltPrompt {
@@ -138,6 +148,15 @@ function buildSystemPrompt(input: BuildPromptInput): string {
 function buildUserPrompt(input: BuildPromptInput): string {
 	const cleanBody = input.newestMessage.bodyText.replace(DIRECTIVE_STRIP, "").trim();
 	const lines: string[] = [`From: ${input.newestMessage.from}`, `Subject: ${input.newestMessage.subject}`];
+	if (input.gmailThreadUrl) {
+		lines.push(`Gmail thread: ${input.gmailThreadUrl}`);
+	}
+	if (input.linkedIssueNumbers.length > 0) {
+		lines.push(`Already linked issues on this thread: ${input.linkedIssueNumbers.map((n) => `#${n}`).join(", ")}`);
+	}
+	if (input.linkedPrNumbers.length > 0) {
+		lines.push(`Already linked PRs on this thread: ${input.linkedPrNumbers.map((n) => `#${n}`).join(", ")}`);
+	}
 	if (input.newestMessage.attachments.length > 0) {
 		lines.push("");
 		lines.push(`Attachments (${input.newestMessage.attachments.length}):`);

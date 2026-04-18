@@ -84,6 +84,12 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 			: a.path,
 	}));
 
+	// Scan log.jsonl for issue/PR numbers previously linked to this thread
+	// so the agent can reference them (and knows NOT to re-file a new issue
+	// when one already exists — see the SOUL force-rule on auto-filing).
+	const { linkedIssueNumbers, linkedPrNumbers } = await scanLinkedResources(store, tid);
+	const gmailThreadUrl = `https://mail.google.com/mail/u/0/#all/${tid}`;
+
 	const prompt = buildPrompt({
 		newestMessage: {
 			from: newestInbound.from,
@@ -97,6 +103,9 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		globalMemory,
 		threadMemory,
 		skills,
+		gmailThreadUrl,
+		linkedIssueNumbers,
+		linkedPrNumbers,
 	});
 
 	// Use the thread's FIRST inbound subject for all outgoing mail. Gmail's
@@ -256,9 +265,21 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 			actionCount: contract.actions.length,
 			actionKinds: contract.actions.map((a) => a.kind),
 			unfinishedCount: contract.unfinished?.length ?? 0,
+			linkedIssueNumbers: extractNumbersByKinds(contract.actions, ["issue_create", "issue_comment"]),
+			linkedPrNumbers: extractNumbersByKinds(contract.actions, ["pr_opened", "pr_updated"]),
 		},
 		usage: result.usage,
 	});
+}
+
+function extractNumbersByKinds(actions: Array<{ kind: string; [k: string]: unknown }>, kinds: string[]): number[] {
+	const set = new Set<number>();
+	for (const a of actions) {
+		if (!kinds.includes(a.kind)) continue;
+		const n = (a as { number?: unknown; issue?: unknown }).number ?? (a as { issue?: unknown }).issue;
+		if (typeof n === "number" && Number.isFinite(n)) set.add(n);
+	}
+	return Array.from(set).sort((a, b) => a - b);
 }
 
 async function runBackend(
@@ -358,6 +379,42 @@ interface NewestInbound {
 	subject: string;
 	bodyText: string;
 	attachments: Array<{ filename: string; path: string; bytes: number }>;
+}
+
+/**
+ * Walk the thread's log.jsonl and collect every issue / PR number that a
+ * prior agent turn wrote to the outbound contract. Deduped. Used to tell
+ * the current agent which resources it can comment on rather than
+ * creating new duplicates.
+ */
+export async function scanLinkedResources(
+	store: Store,
+	tid: string,
+): Promise<{ linkedIssueNumbers: number[]; linkedPrNumbers: number[] }> {
+	const logPath = join(store.threadPathAbs(tid), "log.jsonl");
+	if (!existsSync(logPath)) return { linkedIssueNumbers: [], linkedPrNumbers: [] };
+	const content = await readFile(logPath, "utf-8");
+	const issues = new Set<number>();
+	const prs = new Set<number>();
+	for (const line of content.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			const row = JSON.parse(line);
+			if (row.kind !== "outbound") continue;
+			for (const n of row.contract?.linkedIssueNumbers ?? []) {
+				if (Number.isFinite(n)) issues.add(n);
+			}
+			for (const n of row.contract?.linkedPrNumbers ?? []) {
+				if (Number.isFinite(n)) prs.add(n);
+			}
+		} catch {
+			// skip malformed line
+		}
+	}
+	return {
+		linkedIssueNumbers: Array.from(issues).sort((a, b) => a - b),
+		linkedPrNumbers: Array.from(prs).sort((a, b) => a - b),
+	};
 }
 
 /**

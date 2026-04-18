@@ -32,6 +32,12 @@ export type LogEntry =
 				actionCount: number;
 				actionKinds: string[];
 				unfinishedCount: number;
+				// Extracted from contract.actions for cross-thread lookup — the
+				// auto-issue-filing logic needs to know if a thread already has
+				// a linked issue, and the web UI surfaces these as badges on
+				// thread cards.
+				linkedIssueNumbers?: number[];
+				linkedPrNumbers?: number[];
 			};
 			// Per-turn token usage + wall-clock. Populated from the backend's
 			// native session transcript (claude has this today; codex/pi

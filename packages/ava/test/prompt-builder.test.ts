@@ -8,6 +8,9 @@ const BASE = {
 	globalMemory: "",
 	threadMemory: "",
 	skills: [],
+	gmailThreadUrl: "https://mail.google.com/mail/u/0/#all/T-1",
+	linkedIssueNumbers: [],
+	linkedPrNumbers: [],
 };
 
 describe("buildPrompt", () => {
