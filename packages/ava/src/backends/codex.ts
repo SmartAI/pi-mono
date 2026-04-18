@@ -2,10 +2,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { FailureKind } from "../types.js";
+import { CODEX_CONTRACT_SCHEMA } from "./codex-schema.js";
 import { type Backend, type BackendRunOpts, type BackendRunResult, concatPrompts } from "./types.js";
 
-const MODEL = "gpt-5.4";
 const SKIP_PERMS = "--dangerously-bypass-approvals-and-sandbox";
+const SCHEMA_FILENAME = "codex-contract-schema.json";
 
 const RATE_LIMIT_RX = /rate\s*limit|quota|429|too many requests/i;
 const AUTH_RX = /401\b|unauthorized|please (re-?)?login|auth.*(expired|invalid)/i;
@@ -14,29 +15,61 @@ const AUTH_RX = /401\b|unauthorized|please (re-?)?login|auth.*(expired|invalid)/
 // subcommand (`codex exec resume <id>`) takes the thread_id back as its argument.
 const THREAD_ID_RX = /"thread_id"\s*:\s*"([0-9a-f-]{8,})"/i;
 
+/**
+ * Codex CLI backend. Key differences vs claude-code:
+ *
+ *   1. No native system/user split (no `--append-system-prompt`) — we concat
+ *      the system+user prompts with a visible separator.
+ *   2. No `--model` flag in our invocation — Codex reads the default from
+ *      the user's `~/.codex/config.toml`, so we stay self-updating if they
+ *      change models.
+ *   3. `--output-schema <file>` structurally enforces the JSON contract
+ *      shape. Claude Code has no equivalent, so this is codex-specific
+ *      hardening: the model CAN'T emit "almost JSON" or add a preamble.
+ *   4. Options MUST come before the `resume` subcommand per clap's
+ *      parser. Putting them after silently misapplies (or errors) on
+ *      resume runs.
+ */
 export class CodexBackend implements Backend {
 	readonly name = "codex" as const;
 
 	async run(opts: BackendRunOpts): Promise<BackendRunResult> {
-		// Host-side paths for files Ava reads/writes directly.
 		const sessionFile = join(opts.dataDir, "threads", opts.threadId, "codex-session-id");
 		const outFileHost = join(opts.dataDir, "threads", opts.threadId, "codex-last.txt");
-		// Container-side path for the -o arg (codex runs inside the sandbox).
 		const outFileContainer = join(opts.containerDataDir, "threads", opts.threadId, "codex-last.txt");
+
+		// Write (or refresh) the contract schema at data/<SCHEMA_FILENAME>.
+		// Idempotent; kept up-to-date with the TS interface via codex-schema.ts.
+		const schemaHost = join(opts.dataDir, SCHEMA_FILENAME);
+		const schemaContainer = join(opts.containerDataDir, SCHEMA_FILENAME);
+		await writeFile(schemaHost, `${JSON.stringify(CODEX_CONTRACT_SCHEMA, null, 2)}\n`);
 
 		await mkdir(dirname(sessionFile), { recursive: true });
 		if (existsSync(outFileHost)) await unlink(outFileHost);
 
 		const resuming = existsSync(sessionFile);
-		const argv: string[] = ["codex", "exec"];
+
+		// All options belong on the `codex exec` parent. If we're resuming,
+		// the `resume <id>` subcommand goes AFTER the options, with the
+		// prompt as its second positional arg. If we're not, the prompt is
+		// the positional arg of `exec` itself.
+		const combined = concatPrompts(opts.systemPrompt, opts.userPrompt);
+		const argv: string[] = [
+			"codex",
+			"exec",
+			SKIP_PERMS,
+			"--json",
+			"--output-schema",
+			schemaContainer,
+			"-o",
+			outFileContainer,
+		];
 		if (resuming) {
 			const id = (await readFile(sessionFile, "utf-8")).trim();
-			argv.push("resume", id);
+			argv.push("resume", id, combined);
+		} else {
+			argv.push(combined);
 		}
-		// codex exec has no native system/user split, so we concatenate with
-		// a prominent separator. Claude backend uses --append-system-prompt.
-		const combined = concatPrompts(opts.systemPrompt, opts.userPrompt);
-		argv.push("-m", MODEL, SKIP_PERMS, "--json", "-o", outFileContainer, combined);
 
 		const result = await opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
 
@@ -45,6 +78,9 @@ export class CodexBackend implements Backend {
 			if (sid) await writeFile(sessionFile, sid);
 		}
 
+		// `-o` writes the model's final message to the file. We swap that in
+		// for stdout so the agent-contract parser sees just the final reply,
+		// not the JSONL event stream.
 		if (result.exitCode === 0 && existsSync(outFileHost)) {
 			result.stdout = await readFile(outFileHost, "utf-8");
 		}
