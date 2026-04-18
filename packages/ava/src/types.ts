@@ -49,6 +49,10 @@ export interface AvaSettings {
 		// Addresses always added to every outbound Cc (ack, status, final reply).
 		// De-duped against To and against self, so self-as-sender never CCs itself.
 		alwaysCc: string[];
+		// Append a one-line cost/usage footer to each coding-agent reply.
+		// Useful early on for rate-limit awareness; can flip off when
+		// noise outweighs signal.
+		includeCostFooter: boolean;
 	};
 	schedules: {
 		enabled: boolean; // default true — flip false to pause all cron jobs without removing the config
@@ -77,7 +81,7 @@ export const DEFAULT_SETTINGS: AvaSettings = {
 	timeouts: { perRunMs: 20 * 60_000, gmailPollMs: 30_000 },
 	attachments: { perReplyMaxBytes: 20 * 1024 * 1024 },
 	dispatcher: { maxConcurrency: 2 },
-	replyDefaults: { alwaysCc: [] },
+	replyDefaults: { alwaysCc: [], includeCostFooter: true },
 	schedules: { enabled: true, tickMs: 30_000 },
 	triage: { enabled: true, timeoutMs: 60_000 },
 	gitFetchIntervalMs: 10 * 60_000,

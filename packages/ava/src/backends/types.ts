@@ -31,6 +31,14 @@ export interface BackendRunResult {
 	stderr: string;
 	durationMs: number;
 	timedOut: boolean;
+	usage?: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheCreateTokens: number;
+		turnCount: number;
+		durationMs: number;
+	};
 }
 
 export interface Backend {

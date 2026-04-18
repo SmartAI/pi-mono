@@ -33,6 +33,18 @@ export type LogEntry =
 				actionKinds: string[];
 				unfinishedCount: number;
 			};
+			// Per-turn token usage + wall-clock. Populated from the backend's
+			// native session transcript (claude has this today; codex/pi
+			// will follow when their parsers land). Useful for rate-limit
+			// planning and the stuck-threads / cost digests.
+			usage?: {
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheCreateTokens: number;
+				turnCount: number;
+				durationMs: number;
+			};
 	  }
 	| {
 			kind: "scheduled-fire";

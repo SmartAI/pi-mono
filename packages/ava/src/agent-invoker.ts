@@ -7,6 +7,7 @@ import { CodexBackend } from "./backends/codex.js";
 import { PiBackend } from "./backends/pi.js";
 import { parseBackendDirective, selectBackend } from "./backends/select.js";
 import type { Backend, BackendRunOpts, BackendRunResult } from "./backends/types.js";
+import { formatUsageFooter } from "./backends/usage.js";
 import { log } from "./log.js";
 import { clearOutgoing, scanOutgoing } from "./outgoing.js";
 import { type BuiltPrompt, buildPrompt, discoverSkills, type InboundAttachment } from "./prompt-builder.js";
@@ -178,9 +179,15 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 	];
 	const overflow = [...overCap.map((o) => ({ filename: o.filename, bytes: o.bytes, path: "" })), ...scanned.overflow];
 	const capMB = Math.floor(settings.attachments.perReplyMaxBytes / (1024 * 1024));
-	const finalBody = overflow.length
+	let finalBody = overflow.length
 		? `${replyBody}\n\n---\n(Some files exceeded the ${capMB}MB attachment cap and were not attached: ${overflow.map((f) => f.filename).join(", ")}. Push these to the PR instead.)`
 		: replyBody;
+	// Opt-in cost footer — telemetry on per-reply token usage for rate-limit
+	// awareness. Only appended when the backend produced usage data (claude
+	// today) and the setting is on.
+	if (settings.replyDefaults.includeCostFooter && result.usage) {
+		finalBody = `${finalBody}\n\n${formatUsageFooter(result.usage)}`;
+	}
 
 	const sentId = await deps.sendReply({
 		threadId: tid,
@@ -206,6 +213,7 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 			actionKinds: contract.actions.map((a) => a.kind),
 			unfinishedCount: contract.unfinished?.length ?? 0,
 		},
+		usage: result.usage,
 	});
 }
 

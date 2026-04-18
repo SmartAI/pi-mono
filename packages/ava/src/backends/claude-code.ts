@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { FailureKind } from "../types.js";
 import type { Backend, BackendRunOpts, BackendRunResult } from "./types.js";
+import { readClaudeUsageSince } from "./usage.js";
 
 const ARGV_PRINT = "-p";
 const ARGV_RESUME = "--resume";
@@ -20,20 +21,42 @@ export class ClaudeCodeBackend implements Backend {
 	async run(opts: BackendRunOpts): Promise<BackendRunResult> {
 		const sessionFile = sessionPath(opts);
 		const argv: string[] = ["claude", ARGV_SKIP_PERMS];
+		let sessionId: string;
 		if (existsSync(sessionFile)) {
-			const id = (await readFile(sessionFile, "utf-8")).trim();
-			argv.push(ARGV_RESUME, id);
+			sessionId = (await readFile(sessionFile, "utf-8")).trim();
+			argv.push(ARGV_RESUME, sessionId);
 		} else {
-			const id = randomUUID();
+			sessionId = randomUUID();
 			await mkdir(dirname(sessionFile), { recursive: true });
-			await writeFile(sessionFile, id);
-			argv.push(ARGV_SESSION_ID, id);
+			await writeFile(sessionFile, sessionId);
+			argv.push(ARGV_SESSION_ID, sessionId);
 		}
 		if (opts.systemPrompt) {
 			argv.push(ARGV_APPEND_SYSTEM, opts.systemPrompt);
 		}
 		argv.push(ARGV_PRINT, opts.userPrompt);
-		return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
+
+		const sinceMs = Date.now();
+		const result = await opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
+
+		// Best-effort token accounting from the session transcript.
+		// Failures here don't block the reply — usage is telemetry, not
+		// correctness. Only attempt on success; errored runs have
+		// partial/missing transcript data anyway.
+		if (result.exitCode === 0) {
+			try {
+				result.usage = await readClaudeUsageSince({
+					cwdInContainer: opts.cwdInContainer,
+					sessionId,
+					sinceMs,
+					durationMs: result.durationMs,
+				});
+			} catch {
+				// swallow — usage is optional
+			}
+		}
+
+		return result;
 	}
 
 	classify(r: BackendRunResult): FailureKind {
