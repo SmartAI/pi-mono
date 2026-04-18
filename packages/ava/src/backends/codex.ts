@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { FailureKind } from "../types.js";
-import type { Backend, BackendRunOpts, BackendRunResult } from "./types.js";
+import { type Backend, type BackendRunOpts, type BackendRunResult, concatPrompts } from "./types.js";
 
 const MODEL = "gpt-5.4";
 const SKIP_PERMS = "--dangerously-bypass-approvals-and-sandbox";
@@ -33,7 +33,10 @@ export class CodexBackend implements Backend {
 			const id = (await readFile(sessionFile, "utf-8")).trim();
 			argv.push("resume", id);
 		}
-		argv.push("-m", MODEL, SKIP_PERMS, "--json", "-o", outFileContainer, opts.prompt);
+		// codex exec has no native system/user split, so we concatenate with
+		// a prominent separator. Claude backend uses --append-system-prompt.
+		const combined = concatPrompts(opts.systemPrompt, opts.userPrompt);
+		argv.push("-m", MODEL, SKIP_PERMS, "--json", "-o", outFileContainer, combined);
 
 		const result = await opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
 

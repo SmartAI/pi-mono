@@ -57,7 +57,8 @@ describe("ClaudeCodeBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hello",
+			systemPrompt: "",
+			userPrompt: "hello",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {
@@ -81,7 +82,8 @@ describe("ClaudeCodeBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "second message",
+			systemPrompt: "",
+			userPrompt: "second message",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {
@@ -102,7 +104,8 @@ describe("ClaudeCodeBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv, opts) => {

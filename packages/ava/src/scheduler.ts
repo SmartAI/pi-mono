@@ -6,6 +6,7 @@ import { type CronMatch, parseCron } from "./cron.js";
 import type { GmailClient } from "./gmail/client.js";
 import { log } from "./log.js";
 import { clearOutgoing, scanOutgoing } from "./outgoing.js";
+import { discoverSkills } from "./prompt-builder.js";
 import type { Store } from "./store.js";
 import type { AvaSettings, BackendName, ScheduleEntry } from "./types.js";
 
@@ -117,11 +118,16 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 	await clearOutgoing(threadDir);
 	await resetBackendSessions(threadDir);
 
-	const prompt = buildScheduledPrompt({
+	const worktreeHost = deps.store.threadPathAbs(threadId, "worktree");
+	const skills = await discoverSkills(worktreeHost);
+	const globalMemory = await readIfExists(join(deps.store.dataDir, "MEMORY.md"));
+	const { systemPrompt, userPrompt } = buildScheduledPrompt({
 		entry,
 		dateStr,
 		worktreePath: deps.cwdInContainer(threadId),
 		outgoingPath: "./outgoing",
+		skills,
+		globalMemory,
 	});
 
 	let result: Awaited<ReturnType<Backend["run"]>>;
@@ -129,7 +135,8 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 		result = await backend.run({
 			threadId,
 			cwdInContainer: deps.cwdInContainer(threadId),
-			prompt,
+			systemPrompt,
+			userPrompt,
 			dataDir: deps.store.dataDir,
 			containerDataDir: deps.containerDataDir,
 			timeoutMs: deps.settings.timeouts.perRunMs,
@@ -236,35 +243,62 @@ async function fireOne(entry: CompiledEntry, deps: SchedulerDeps, now: Date): Pr
 	log.info("scheduled job sent", { name: entry.name, messageId: sentId, to: entry.to });
 }
 
+import type { SkillMeta } from "./prompt-builder.js";
+
+async function readIfExists(path: string): Promise<string> {
+	if (!existsSync(path)) return "";
+	try {
+		return await readFile(path, "utf-8");
+	} catch {
+		return "";
+	}
+}
+
 function buildScheduledPrompt(input: {
 	entry: ScheduleEntry;
 	dateStr: string;
 	worktreePath: string;
 	outgoingPath: string;
-}): string {
-	// Scheduled prompts stay plain-text (no JSON contract) because their
-	// output is a pre-formatted email body, not a structured agent report.
-	// The task text comes from the operator who wrote the schedule entry;
-	// they own the output shape.
-	return [
-		`You are Ava running a scheduled job — NOT replying to an email.`,
-		`Working directory: ${input.worktreePath}.`,
-		`Today's date: ${input.dateStr}.`,
-		`Schedule: ${input.entry.name} (cron: ${input.entry.cron}).`,
-		`Recipients: ${input.entry.to.join(", ")}.`,
-		``,
-		`## System facts`,
-		`- You have no background workers and no runtime between turns — everything you produce must happen in this turn's tool calls.`,
-		`- Skills are auto-discovered from \`.claude/skills/\` — use them when the task references one.`,
-		`- \`${input.outgoingPath}/\` is only for binary or large attachments (screenshots, diffs, PDFs). Do NOT write your reply text to a file.`,
-		``,
-		`## How to output`,
-		`- Your **final stdout** becomes the email body verbatim. Plain text, code fences OK, no preambles, no "Here's the report:" framing — just the message.`,
-		`- If you have nothing to report (e.g. the health-check skill's silent-when-stable case), emit **empty stdout** and Ava will skip sending entirely.`,
-		``,
-		`## Task`,
-		input.entry.prompt,
-	].join("\n");
+	skills: SkillMeta[];
+	globalMemory: string;
+}): { systemPrompt: string; userPrompt: string } {
+	// Scheduled flows use plain-text output (not the JSON contract) because
+	// the task body in the schedule entry already dictates output shape; the
+	// operator who wrote the schedule owns it.
+	const sys: string[] = [];
+	sys.push(
+		[
+			`You are Ava running a scheduled job — NOT replying to an email.`,
+			`Working directory: ${input.worktreePath}.`,
+			`Today's date: ${input.dateStr}.`,
+			`Schedule: ${input.entry.name} (cron: ${input.entry.cron}).`,
+			`Recipients: ${input.entry.to.join(", ")}.`,
+		].join("\n"),
+	);
+	sys.push(
+		[
+			`## System facts`,
+			`- You have no background workers and no runtime between turns — everything you produce must happen in this turn's tool calls.`,
+			`- \`${input.outgoingPath}/\` is only for binary or large attachments (screenshots, diffs, PDFs). Do NOT write your reply text to a file.`,
+		].join("\n"),
+	);
+	if (input.skills.length > 0) {
+		const lines = [`## Skills (${input.skills.length} available — discovered from .claude/skills/)`];
+		for (const s of input.skills) {
+			lines.push(`- **${s.name}**: ${s.description}`);
+		}
+		sys.push(lines.join("\n"));
+	}
+	const gm = input.globalMemory.trim();
+	if (gm) sys.push(`## Ava memory (global)\n${gm}`);
+	sys.push(
+		[
+			`## How to output`,
+			`- Your **final stdout** becomes the email body verbatim. Plain text, code fences OK, no preambles, no "Here's the report:" framing — just the message.`,
+			`- If you have nothing to report (e.g. the health-check skill's silent-when-stable case), emit **empty stdout** and Ava will skip sending entirely.`,
+		].join("\n"),
+	);
+	return { systemPrompt: sys.join("\n\n"), userPrompt: input.entry.prompt };
 }
 
 function validateEntry(e: ScheduleEntry): void {

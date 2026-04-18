@@ -21,7 +21,8 @@ describe("PiBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv, opts) => {

@@ -48,7 +48,8 @@ describe("CodexBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async () => ({
@@ -69,7 +70,8 @@ describe("CodexBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {
@@ -97,7 +99,8 @@ describe("CodexBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "second",
+			systemPrompt: "",
+			userPrompt: "second",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {
@@ -116,7 +119,8 @@ describe("CodexBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (_argv, opts) => {
@@ -135,7 +139,8 @@ describe("CodexBackend", () => {
 			threadId: "T-1",
 			cwdInContainer: "/workspace/threads/T-1/worktree",
 			containerDataDir: dir,
-			prompt: "hi",
+			systemPrompt: "",
+			userPrompt: "hi",
 			dataDir: dir,
 			timeoutMs: 5_000,
 			sandboxExec: async (argv) => {

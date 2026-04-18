@@ -9,7 +9,7 @@ import { parseBackendDirective, selectBackend } from "./backends/select.js";
 import type { Backend, BackendRunOpts, BackendRunResult } from "./backends/types.js";
 import { log } from "./log.js";
 import { clearOutgoing, scanOutgoing } from "./outgoing.js";
-import { buildPrompt } from "./prompt-builder.js";
+import { type BuiltPrompt, buildPrompt, discoverSkills, type InboundAttachment } from "./prompt-builder.js";
 import { normalizeReply } from "./reply-format.js";
 import type { Store } from "./store.js";
 import type { AvaSettings, BackendName, FailureKind, OutboundReply } from "./types.js";
@@ -59,19 +59,38 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		directive,
 	});
 
+	// Inject memory every turn (not just first-run) so updates to either
+	// file land in the next invocation without waiting for a fresh thread.
 	const globalMemory = await readIf(join(store.dataDir, "MEMORY.md"));
 	const threadMemory = await readIf(join(store.threadPathAbs(tid), "MEMORY.md"));
-	const isFirstRun =
-		!existsSync(join(store.threadPathAbs(tid), "claude-session-id")) &&
-		!existsSync(join(store.threadPathAbs(tid), "codex-session-id")) &&
-		!existsSync(join(store.threadPathAbs(tid), "pi-session.jsonl"));
+
+	// Enumerate skills from the worktree's .claude/skills/ so the agent
+	// knows by name+description what's available, not just that a dir exists.
+	const worktreeHostPath = store.threadPathAbs(tid, "worktree");
+	const skills = await discoverSkills(worktreeHostPath);
+
+	// Translate attachment paths from host-absolute to container-absolute
+	// so the listing we hand to the agent actually resolves in its shell.
+	const attachmentsForPrompt: InboundAttachment[] = (newestInbound.attachments ?? []).map((a) => ({
+		filename: a.filename,
+		bytes: a.bytes,
+		containerPath: a.path.startsWith(store.dataDir)
+			? `${deps.containerDataDir}${a.path.slice(store.dataDir.length)}`
+			: a.path,
+	}));
+
 	const prompt = buildPrompt({
-		isFirstRun,
-		newestMessage: newestInbound,
+		newestMessage: {
+			from: newestInbound.from,
+			subject: newestInbound.subject,
+			bodyText: newestInbound.bodyText,
+			attachments: attachmentsForPrompt,
+		},
 		worktreePath: deps.cwdInContainer(tid),
 		outgoingPath: "./outgoing",
 		globalMemory,
 		threadMemory,
+		skills,
 	});
 
 	let result = await runBackend(primary, deps, tid, prompt);
@@ -155,13 +174,14 @@ async function runBackend(
 	name: BackendName,
 	deps: AgentInvokerDeps,
 	tid: string,
-	prompt: string,
+	prompt: BuiltPrompt,
 ): Promise<BackendRunResult> {
 	const backend = deps.allowedBackends[name];
 	return backend.run({
 		threadId: tid,
 		cwdInContainer: deps.cwdInContainer(tid),
-		prompt,
+		systemPrompt: prompt.systemPrompt,
+		userPrompt: prompt.userPrompt,
 		dataDir: deps.store.dataDir,
 		containerDataDir: deps.containerDataDir,
 		timeoutMs: deps.settings.timeouts.perRunMs,
@@ -223,6 +243,7 @@ interface NewestInbound {
 	cc: string[];
 	subject: string;
 	bodyText: string;
+	attachments: Array<{ filename: string; path: string; bytes: number }>;
 }
 
 async function readNewestInbound(store: Store, tid: string): Promise<NewestInbound | null> {
@@ -241,6 +262,7 @@ async function readNewestInbound(store: Store, tid: string): Promise<NewestInbou
 					cc: row.cc ?? [],
 					subject: row.subject,
 					bodyText: row.bodyText,
+					attachments: row.attachments ?? [],
 				};
 			}
 		} catch {

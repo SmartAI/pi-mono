@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { FailureKind } from "../types.js";
-import type { Backend, BackendRunOpts, BackendRunResult } from "./types.js";
+import { type Backend, type BackendRunOpts, type BackendRunResult, concatPrompts } from "./types.js";
 
 const RATE_LIMIT_RX = /rate[_\s]*limit|quota|429/i;
 const AUTH_RX = /auth.*(expired|invalid|required)|please re-?login|oauth.*(revoked|invalid)/i;
@@ -12,7 +12,8 @@ export class PiBackend implements Backend {
 		// pi runs inside the container and reads/writes --session via its own process,
 		// so the path we pass must be the container-visible path, not the host path.
 		const sessionPath = join(opts.containerDataDir, "threads", opts.threadId, "pi-session.jsonl");
-		const argv: string[] = ["pi", "--session", sessionPath, "--no-context-files", "-p", opts.prompt];
+		const combined = concatPrompts(opts.systemPrompt, opts.userPrompt);
+		const argv: string[] = ["pi", "--session", sessionPath, "--no-context-files", "-p", combined];
 		return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
 	}
 

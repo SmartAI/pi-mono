@@ -9,6 +9,7 @@ const ARGV_PRINT = "-p";
 const ARGV_RESUME = "--resume";
 const ARGV_SESSION_ID = "--session-id";
 const ARGV_SKIP_PERMS = "--dangerously-skip-permissions";
+const ARGV_APPEND_SYSTEM = "--append-system-prompt";
 
 const RATE_LIMIT_RX = /rate\s*limit|quota|429|retry after/i;
 const AUTH_RX = /(authentication|auth).*(expired|invalid|required|revoked)|please re-?login/i;
@@ -28,7 +29,10 @@ export class ClaudeCodeBackend implements Backend {
 			await writeFile(sessionFile, id);
 			argv.push(ARGV_SESSION_ID, id);
 		}
-		argv.push(ARGV_PRINT, opts.prompt);
+		if (opts.systemPrompt) {
+			argv.push(ARGV_APPEND_SYSTEM, opts.systemPrompt);
+		}
+		argv.push(ARGV_PRINT, opts.userPrompt);
 		return opts.sandboxExec(argv, { timeoutMs: opts.timeoutMs, workdir: opts.cwdInContainer });
 	}
 

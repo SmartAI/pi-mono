@@ -1,74 +1,115 @@
 import { describe, expect, it } from "vitest";
 import { buildPrompt } from "../src/prompt-builder.js";
 
+const BASE = {
+	worktreePath: "/workspace/threads/T-1/worktree",
+	outgoingPath: "./outgoing",
+	globalMemory: "",
+	threadMemory: "",
+	skills: [],
+};
+
 describe("buildPrompt", () => {
-	it("includes sender, subject, and body", () => {
-		const p = buildPrompt({
-			isFirstRun: false,
+	it("puts sender info + subject + body in the user prompt only (not system)", () => {
+		const { systemPrompt, userPrompt } = buildPrompt({
+			...BASE,
 			newestMessage: {
 				from: "brian@actualvoice.ai",
 				subject: "typo fix",
 				bodyText: "fix the typo on /signup",
+				attachments: [],
 			},
-			worktreePath: "/workspace/threads/T-1/worktree",
-			outgoingPath: "./outgoing",
-			globalMemory: "",
-			threadMemory: "",
 		});
-		expect(p).toContain("brian@actualvoice.ai");
-		expect(p).toContain("typo fix");
-		expect(p).toContain("fix the typo on /signup");
-		expect(p).toContain("/workspace/threads/T-1/worktree");
-		expect(p).toContain("./outgoing");
+		expect(userPrompt).toContain("brian@actualvoice.ai");
+		expect(userPrompt).toContain("typo fix");
+		expect(userPrompt).toContain("fix the typo on /signup");
+		expect(systemPrompt).not.toContain("brian@actualvoice.ai");
+		expect(systemPrompt).not.toContain("fix the typo on /signup");
 	});
 
-	it("includes memory on first run only", () => {
-		const first = buildPrompt({
-			isFirstRun: true,
-			newestMessage: { from: "u@v", subject: "s", bodyText: "b" },
-			worktreePath: "/w",
-			outgoingPath: "./outgoing",
+	it("puts worktree path and outgoing path in the system prompt", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
+		});
+		expect(systemPrompt).toContain("/workspace/threads/T-1/worktree");
+		expect(systemPrompt).toContain("./outgoing");
+	});
+
+	it("injects memory every turn when non-empty (no isFirstRun gate)", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
 			globalMemory: "GLOBAL_MEM",
 			threadMemory: "THREAD_MEM",
 		});
-		expect(first).toContain("GLOBAL_MEM");
-		expect(first).toContain("THREAD_MEM");
-
-		const later = buildPrompt({
-			isFirstRun: false,
-			newestMessage: { from: "u@v", subject: "s", bodyText: "b" },
-			worktreePath: "/w",
-			outgoingPath: "./outgoing",
-			globalMemory: "GLOBAL_MEM",
-			threadMemory: "THREAD_MEM",
-		});
-		expect(later).not.toContain("GLOBAL_MEM");
-		expect(later).not.toContain("THREAD_MEM");
+		expect(systemPrompt).toContain("GLOBAL_MEM");
+		expect(systemPrompt).toContain("THREAD_MEM");
 	});
 
-	it("instructs the agent that stdout IS the reply (no reply-file drafting)", () => {
-		const p = buildPrompt({
-			isFirstRun: false,
-			newestMessage: { from: "u@v", subject: "s", bodyText: "b" },
-			worktreePath: "/w",
-			outgoingPath: "./outgoing",
-			globalMemory: "",
-			threadMemory: "",
+	it("omits memory sections when memory strings are empty", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
 		});
-		expect(p).toMatch(/stdout.*email body/i);
-		expect(p).toMatch(/do not write a copy of your reply/i);
-		expect(p).toMatch(/only\*?\*? for binary or large artifacts/i);
+		expect(systemPrompt).not.toContain("Ava memory (global)");
+		expect(systemPrompt).not.toContain("Ava memory (this thread)");
+	});
+
+	it("enumerates skills in the system prompt with name + description", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
+			skills: [
+				{ name: "health-check", description: "Probe production services" },
+				{ name: "meeting-notes", description: "Extract action items" },
+			],
+		});
+		expect(systemPrompt).toContain("**health-check**: Probe production services");
+		expect(systemPrompt).toContain("**meeting-notes**: Extract action items");
+		expect(systemPrompt).toContain("2 available");
+	});
+
+	it("requires the JSON response contract in the system prompt", () => {
+		const { systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: { from: "u@v", subject: "s", bodyText: "b", attachments: [] },
+		});
+		expect(systemPrompt).toMatch(/Response format/i);
+		expect(systemPrompt).toMatch(/"status":\s*"done" \| "partial" \| "blocked"/);
+		expect(systemPrompt).toMatch(/"email_body":/);
+		expect(systemPrompt).toMatch(/"actions":/);
+	});
+
+	it("lists attachments in the user prompt with their sandbox container paths", () => {
+		const { userPrompt, systemPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: {
+				from: "brian@actualvoice.ai",
+				subject: "spec attached",
+				bodyText: "see attached",
+				attachments: [
+					{ filename: "spec.md", containerPath: "/workspace/threads/T-1/attachments/m1/spec.md", bytes: 4753 },
+				],
+			},
+		});
+		expect(userPrompt).toContain("Attachments (1)");
+		expect(userPrompt).toContain("spec.md");
+		expect(userPrompt).toContain("/workspace/threads/T-1/attachments/m1/spec.md");
+		// Attachments go in user prompt, not system
+		expect(systemPrompt).not.toContain("/workspace/threads/T-1/attachments");
 	});
 
 	it("strips the @ava:use directive from the body shown to the agent", () => {
-		const p = buildPrompt({
-			isFirstRun: false,
-			newestMessage: { from: "u@v", subject: "s", bodyText: "please do X @ava:use=codex thanks" },
-			worktreePath: "/w",
-			outgoingPath: "./outgoing",
-			globalMemory: "",
-			threadMemory: "",
+		const { userPrompt } = buildPrompt({
+			...BASE,
+			newestMessage: {
+				from: "u@v",
+				subject: "s",
+				bodyText: "please do X @ava:use=codex thanks",
+				attachments: [],
+			},
 		});
-		expect(p).not.toContain("@ava:use");
+		expect(userPrompt).not.toContain("@ava:use");
 	});
 });
