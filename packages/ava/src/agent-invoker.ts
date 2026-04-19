@@ -1,6 +1,11 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execFileP = promisify(execFile);
+
 import type { AgentContract } from "./agent-contract.js";
 import { buildEmailBody, parseAgentContract, resolveContractAttachments } from "./agent-contract.js";
 import { ClaudeCodeBackend } from "./backends/claude-code.js";
@@ -252,6 +257,9 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 		attachments: attached.map((a) => ({ filename: a.filename, path: a.path, bytes: a.bytes })),
 	});
 
+	const thisTurnIssueNumbers = extractNumbersByKinds(contract.actions, ["issue_create", "issue_comment"]);
+	const thisTurnPrNumbers = extractNumbersByKinds(contract.actions, ["pr_opened", "pr_updated"]);
+
 	await store.appendOutbound(tid, {
 		kind: "outbound",
 		gmailMessageId: sentId,
@@ -265,11 +273,121 @@ export async function runThread(tid: string, deps: AgentInvokerDeps): Promise<vo
 			actionCount: contract.actions.length,
 			actionKinds: contract.actions.map((a) => a.kind),
 			unfinishedCount: contract.unfinished?.length ?? 0,
-			linkedIssueNumbers: extractNumbersByKinds(contract.actions, ["issue_create", "issue_comment"]),
-			linkedPrNumbers: extractNumbersByKinds(contract.actions, ["pr_opened", "pr_updated"]),
+			linkedIssueNumbers: thisTurnIssueNumbers,
+			linkedPrNumbers: thisTurnPrNumbers,
 		},
 		usage: result.usage,
 	});
+
+	// Sync every ALREADY-LINKED issue on this thread (from prior turns, NOT
+	// ones the agent just created — those already have the inbound in their
+	// body, don't need a duplicate comment). Also skip issues the agent just
+	// commented on itself in `contract.actions` — its own issue_comment
+	// actions cover those. Result: every GH issue tracking this thread
+	// gets one Ava-posted comment per turn with inbound + agent reply
+	// summary + cost. Non-blocking — gh failures don't break the reply.
+	const newlyCreatedThisTurn = new Set<number>(
+		contract.actions.filter((a) => a.kind === "issue_create").map((a) => Number((a as { number?: unknown }).number)),
+	);
+	const agentCommentedThisTurn = new Set<number>(
+		contract.actions
+			.filter((a) => a.kind === "issue_comment")
+			.map((a) => Number((a as { issue?: unknown; number?: unknown }).issue ?? (a as { number?: unknown }).number)),
+	);
+	const issuesToSync = linkedIssueNumbers.filter(
+		(n) => !newlyCreatedThisTurn.has(n) && !agentCommentedThisTurn.has(n),
+	);
+	for (const n of issuesToSync) {
+		try {
+			await postIssueComment(n, {
+				from: newestInbound.from,
+				inboundBody: newestInbound.bodyText,
+				status: contract.status,
+				summary: contract.summary ?? "",
+				emailBody: contract.email_body,
+				actionKinds: contract.actions.map((a) => a.kind),
+				actionCount: contract.actions.length,
+				prNumbersThisTurn: thisTurnPrNumbers,
+				usdCost: result.usage ? formatUsdOnly(result.usage) : "—",
+				gmailThreadUrl,
+			});
+			log.info("synced comment to issue", { tid, issueNumber: n });
+		} catch (e) {
+			log.warn("issue-comment sync failed (non-blocking)", { tid, issueNumber: n, error: String(e) });
+		}
+	}
+}
+
+async function postIssueComment(
+	issueNumber: number,
+	ctx: {
+		from: string;
+		inboundBody: string;
+		status: string;
+		summary: string;
+		emailBody: string;
+		actionKinds: string[];
+		actionCount: number;
+		prNumbersThisTurn: number[];
+		usdCost: string;
+		gmailThreadUrl: string;
+	},
+): Promise<void> {
+	const firstInboundLine = ctx.inboundBody.trim().split("\n")[0]?.slice(0, 200) ?? "";
+	const emailBodyExcerpt = ctx.emailBody.trim().split("\n").slice(0, 6).join("\n").slice(0, 500);
+	const kindsSummary = ctx.actionKinds.length > 0 ? ctx.actionKinds.join(", ") : "(no tool actions)";
+	const prLine =
+		ctx.prNumbersThisTurn.length > 0
+			? `\n\n**PRs this turn:** ${ctx.prNumbersThisTurn.map((n) => `#${n}`).join(", ")}`
+			: "";
+	const body = [
+		`### Update — ${new Date().toISOString().replace("T", " ").slice(0, 16)}Z`,
+		``,
+		`**From ${ctx.from}:**`,
+		`> ${firstInboundLine}`,
+		``,
+		`**Ava** — status: \`${ctx.status}\`, actions (${ctx.actionCount}): ${kindsSummary}${prLine}`,
+		``,
+		emailBodyExcerpt,
+		emailBodyExcerpt.length >= 500 ? "\n…(truncated — full body in the email thread)" : "",
+		``,
+		`---`,
+		`cost: ${ctx.usdCost} · [Gmail thread](${ctx.gmailThreadUrl})`,
+	]
+		.filter((s) => s !== undefined)
+		.join("\n");
+
+	const token = await readAvaGhToken();
+	const env = token ? { ...process.env, GH_TOKEN: token } : process.env;
+	await execFileP("gh", ["issue", "comment", String(issueNumber), "--repo", "SmartAI/voicepulse", "--body", body], {
+		env,
+		timeout: 15_000,
+	});
+}
+
+async function readAvaGhToken(): Promise<string | null> {
+	const p = `${process.env.HOME}/.config/ava/gh-token`;
+	if (!existsSync(p)) return null;
+	try {
+		return (await readFile(p, "utf-8")).trim();
+	} catch {
+		return null;
+	}
+}
+
+function formatUsdOnly(usage: {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheCreateTokens: number;
+}): string {
+	const usd =
+		(usage.inputTokens * 3) / 1_000_000 +
+		(usage.outputTokens * 15) / 1_000_000 +
+		(usage.cacheReadTokens * 0.3) / 1_000_000 +
+		(usage.cacheCreateTokens * 3.75) / 1_000_000;
+	if (usd < 0.01) return "<$0.01";
+	return `$${usd.toFixed(2)}`;
 }
 
 function extractNumbersByKinds(actions: Array<{ kind: string; [k: string]: unknown }>, kinds: string[]): number[] {
